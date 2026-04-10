@@ -78,6 +78,8 @@ int main(int argc, const char * argv[]) {
         exit(1);
     }
     
+    const string earlyStopToken = "__EARLY_STOP_SBayesR__";
+    
     try {
         
         Options opt;
@@ -294,9 +296,9 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
-                if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+               if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
                     cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
-                    return 0;
+                    throw earlyStopToken;
                 }
                 if (opt.analysisType == "GWFM") {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
@@ -318,7 +320,7 @@ int main(int argc, const char * argv[]) {
              
             if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
                 cout << "\nStopping before model selection/build and MCMC start for SBayesR as requested." << endl;
-                return 0;
+                throw earlyStopToken;
             }
             
             if (opt.nDistAuto) gctb.findBestFitModel(data, opt);
@@ -563,7 +565,9 @@ int main(int argc, const char * argv[]) {
         }
     }
     catch (const std::string &err_msg) {
-        cerr << "\n" << err_msg << endl;
+        if (err_msg != earlyStopToken) {
+            cerr << "\n" << err_msg << endl;
+        }
     }
     catch (const char *err_msg) {
         cerr << "\n" << err_msg << endl;
