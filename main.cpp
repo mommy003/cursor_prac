@@ -333,6 +333,14 @@ int main(int argc, const char * argv[]) {
 //                                                              opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
             MCMC *mcmc = new MCMC();
+            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+    cout << "\nStopping after MCMC object creation and before MCMC run for SBayesR as requested." << endl;
+    delete mcmc;
+    delete model;
+    mcmc = nullptr;
+    model = nullptr;
+    throw earlyStopToken;
+}
             vector<McmcSamples*> mcmcSampleVec = mcmc->run(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin, true,
                                                            opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
