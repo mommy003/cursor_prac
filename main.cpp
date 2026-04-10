@@ -294,6 +294,10 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
+                if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+                    cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
+                    return 0;
+                }
                 if (opt.analysisType == "GWFM") {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
                 }
