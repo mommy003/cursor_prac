@@ -8,6 +8,15 @@
 
 #include "gctb.hpp"
 
+namespace {
+void freeMcmcSamples(vector<McmcSamples*> &samples) {
+    for (McmcSamples *sample : samples) {
+        delete sample;
+    }
+    samples.clear();
+}
+} // namespace
+
 void GCTB::inputIndInfo(Data &data, const string &bedFile, const string &phenotypeFile, const string &keepIndFile, const unsigned keepIndMax, const unsigned mphen, const string &covariateFile, const string &randomCovariateFile, const string &residualDiagFile){
     data.readFamFile(bedFile + ".fam");
     data.readPhenotypeFile(phenotypeFile, mphen);
@@ -321,7 +330,8 @@ void GCTB::findBestFitModel(Data &data, Options &opt){
     opt.pis = model.modelVec[selectedModelIdx]->Pis.values;
 
     cout << "\nModel " << selectedModelIdx+1 << " (" << opt.numDist << "-component model) is selected because a more complex model did not explain a significantly higher SNP-based heritability." << endl;
-    
+
+     freeMcmcSamples(mcmcSampleVec);
 }
 
 vector<McmcSamples*> GCTB::multi_chain_mcmc(Data &data, const string &bayesType, const unsigned windowWidth, const float heritability, const float propVarRandom, const float pi, const float piAlpha, const float piBeta, const bool estimatePi, const VectorXf &pis, const VectorXf &gamma, const float phi, const float kappa, const string &algorithm, const unsigned snpFittedPerWindow, const float varS, const vector<float> &S, const float overdispersion, const bool estimatePS, const float icrsq, const float spouseCorrelation, const bool diagnosticMode, const bool robustMode, const unsigned numChains, const unsigned chainLength, const unsigned burnin, const unsigned thin, const unsigned outputFreq, const string &title, const bool writeBinPosterior, const bool writeTxtPosterior){
@@ -1511,6 +1521,9 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         
         cout << boost::format("%10s %25s %20s\n") % cutoff % cor[i] % rel[i];
 
+        freeMcmcSamples(mcmcSampleVeci);
+        delete modeli;
+
     }
     
     data.nGWASblock = nGWASblock;
@@ -1539,4 +1552,3 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
     
     return bestCutoff;
 }
-
