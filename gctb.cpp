@@ -7,6 +7,7 @@
 //
 
 #include "gctb.hpp"
+#include <memory>
 
 namespace {
 void freeMcmcSamples(vector<McmcSamples*> &samples) {
@@ -15,16 +16,29 @@ void freeMcmcSamples(vector<McmcSamples*> &samples) {
     }
     samples.clear();
 }
-} // namespace
 
-void GCTB::inputIndInfo(Data &data, const string &bedFile, const string &phenotypeFile, const string &keepIndFile, const unsigned keepIndMax, const unsigned mphen, const string &covariateFile, const string &randomCovariateFile, const string &residualDiagFile){
-    data.readFamFile(bedFile + ".fam");
-    data.readPhenotypeFile(phenotypeFile, mphen);
-    data.readCovariateFile(covariateFile);
-    data.readRandomCovariateFile(randomCovariateFile);
-    data.readResidualDiagFile(residualDiagFile);
-    data.keepMatchedInd(keepIndFile, keepIndMax);
+class McmcSamplesScopeGuard {
+public:
+    explicit McmcSamplesScopeGuard(vector<McmcSamples*> &samplesRef) : samples(samplesRef) {}
+    ~McmcSamplesScopeGuard() { freeMcmcSamples(samples); }
+private:
+    vector<McmcSamples*> &samples;
+};
+
+template <typename T>
+void releaseVectorMemory(vector<T> &v) {
+    vector<T>().swap(v);
 }
+
+void releaseEigenWorkingSet(Data &data) {
+    releaseVectorMemory(data.eigenValLdBlock);
+    releaseVectorMemory(data.eigenVecLdBlock);
+    releaseVectorMemory(data.wcorrBlocks);
+    releaseVectorMemory(data.Qblocks);
+    releaseVectorMemory(data.quantizedEigenQblocks);
+    releaseVectorMemory(data.quantizedEigenUblocks);
+}
+} // namespace
 
 void GCTB::inputSnpInfo(Data &data, const string &bedFile, const string &includeSnpFile, const string &excludeSnpFile, const string &excludeRegionFile, const unsigned includeChr, const bool excludeAmbiguousSNP, const string &skeletonSnpFile, const string &geneticMapFile,  const string &ldBlockInfoFile, const unsigned includeBlock, const string &annotationFile, const bool transpose, const string &continuousAnnoFile, const unsigned flank, const string &eQTLFile, const float mafmin, const float mafmax, const bool noscale, const bool readGenotypes){
     data.readBimFile(bedFile + ".bim");
