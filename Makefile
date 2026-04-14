@@ -18,7 +18,11 @@ ifeq ($(shell uname -s),Linux)
     CXXFLAGS = -I $(EIGEN_PATH) -I $(BOOST_PATH) -DUNIX -DNDEBUG -msse2 -m64 -fopenmp -O3 -std=c++17 -Wall -w
     LIB = -ldl -lz -fopenmp
 else ifeq ($(shell uname -s),Darwin)
-    CXX = /opt/homebrew/opt/llvm/bin/clang++
+    ifneq ("$(wildcard /opt/homebrew/opt/llvm/bin/clang++)","")
+        CXX = /opt/homebrew/opt/llvm/bin/clang++
+    else
+        CXX = clang++
+    endif
     CXXFLAGS = -I /usr/local/include -I $(EIGEN_PATH) -I $(BOOST_PATH) -DUNIX -Dfopen64=fopen -stdlib=libc++ -m64 -fopenmp -O3 -std=c++17 -Wall -w
     LIB = -lz -lm -L/usr/local/opt/libomp/lib -L/opt/homebrew/opt/libomp/lib
 endif
