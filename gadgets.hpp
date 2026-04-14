@@ -97,6 +97,14 @@ void removeSecondElement(VectorXf &vec);
 void writeSparseMatrixBinary(const SparseMatrix<float>& mat, const std::string& filename);
 SparseMatrix<float> readSparseMatrixBinary(const std::string& filename);
 void writeSparseMatrixToText(const SparseMatrix<float>& mat, const std::string& filename);
+
+// -----------------------------------------------------------------------------------------------
+// Memory reporting (opt-in via env var)
+// -----------------------------------------------------------------------------------------------
+bool memReportEnabled();                 // env: GCTB_MEM_REPORT=1
+size_t currentRssBytes();                // resident set size (process)
+string formatBytes(size_t bytes);        // human readable
+void printRss(const string &label);      // prints RSS with a label
 }
 
 #endif /* toolbox_hpp */

@@ -8,6 +8,10 @@
 
 #include "gadgets.hpp"
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
+
 void Gadget::Tokenizer::getTokens(const string &str, const string &sep){
     clear();
     string::size_type begidx,endidx;
@@ -244,4 +248,46 @@ void Gadget::writeSparseMatrixToText(const SparseMatrix<float>& mat, const std::
     }
 
     out.close();
+}
+
+bool Gadget::memReportEnabled() {
+    static bool enabled = []() {
+        const char *v = std::getenv("GCTB_MEM_REPORT");
+        if (!v) return false;
+        string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
+    return enabled;
+}
+
+size_t Gadget::currentRssBytes() {
+#if defined(__APPLE__)
+    mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return static_cast<size_t>(info.resident_size);
+#else
+    return 0;
+#endif
+}
+
+string Gadget::formatBytes(size_t bytes) {
+    const char* units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
+    double v = static_cast<double>(bytes);
+    int u = 0;
+    while (v >= 1024.0 && u < 4) {
+        v /= 1024.0;
+        ++u;
+    }
+    std::ostringstream oss;
+    oss.setf(std::ios::fixed);
+    oss << std::setprecision((u == 0) ? 0 : 2) << v << " " << units[u];
+    return oss.str();
+}
+
+void Gadget::printRss(const string &label) {
+    cout << "[mem] " << label << " RSS=" << formatBytes(currentRssBytes()) << endl;
 }

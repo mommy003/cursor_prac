@@ -1762,6 +1762,51 @@ public:
     enum {gibbs, cg, mh, tgs, tgs_thin} algorithm;
     
     vector<vector<int> > highLDsnpSet;
+
+    void reportMemory(const string &where) const {
+        if (!Gadget::memReportEnabled()) return;
+
+        Gadget::printRss(where);
+
+        const size_t ptrBytes = sizeof(void*);
+        const size_t floatBytes = sizeof(float);
+        const size_t intBytes = sizeof(int);
+
+        auto vecPtrBytes = [&](const auto &v) -> size_t { return v.capacity() * ptrBytes; };
+        auto vecFloatBytes = [&](const VectorXf &v) -> size_t { return static_cast<size_t>(v.size()) * floatBytes; };
+        auto vecIntBytes = [&](const VectorXi &v) -> size_t { return static_cast<size_t>(v.size()) * intBytes; };
+
+        size_t wcorrBytes = 0;
+        for (const auto &b : wcorrBlocks) wcorrBytes += static_cast<size_t>(b.size()) * floatBytes;
+        size_t whatBytes = 0;
+        for (const auto &b : whatBlocks) whatBytes += static_cast<size_t>(b.size()) * floatBytes;
+
+        cout << "[mem] ApproxBayesR sizeof(this)=" << Gadget::formatBytes(sizeof(*this)) << endl;
+        cout << "[mem] rcorr=" << Gadget::formatBytes(vecFloatBytes(rcorr)) << " (n=" << rcorr.size() << ")" << endl;
+        cout << "[mem] wcorrBlocks=" << Gadget::formatBytes(wcorrBytes) << " (blocks=" << wcorrBlocks.size() << ")" << endl;
+        cout << "[mem] whatBlocks=" << Gadget::formatBytes(whatBytes) << " (blocks=" << whatBlocks.size() << ")" << endl;
+
+        cout << "[mem] paramSetVec ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramSetVec))
+             << " (size=" << paramSetVec.size() << ", cap=" << paramSetVec.capacity() << ")" << endl;
+        cout << "[mem] paramVec ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramVec))
+             << " (size=" << paramVec.size() << ", cap=" << paramVec.capacity() << ")" << endl;
+        cout << "[mem] paramToPrint ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramToPrint))
+             << " (size=" << paramToPrint.size() << ", cap=" << paramToPrint.capacity() << ")" << endl;
+
+        // Selected internal buffers in SnpEffects (dynamic allocations happen there)
+        cout << "[mem] snpEffects.membership=" << Gadget::formatBytes(vecIntBytes(snpEffects.membership))
+             << " (n=" << snpEffects.membership.size() << ")" << endl;
+        cout << "[mem] snpEffects.deltaNzIdx=" << Gadget::formatBytes(vecIntBytes(snpEffects.deltaNzIdx))
+             << " (n=" << snpEffects.deltaNzIdx.size() << ")" << endl;
+        cout << "[mem] snpEffects.deltaNZ=" << Gadget::formatBytes(vecFloatBytes(snpEffects.deltaNZ))
+             << " (n=" << snpEffects.deltaNZ.size() << ")" << endl;
+        cout << "[mem] snpEffects.lambdaVec=" << Gadget::formatBytes(vecFloatBytes(snpEffects.lambdaVec))
+             << " (n=" << snpEffects.lambdaVec.size() << ")" << endl;
+        cout << "[mem] snpEffects.uhatVec=" << Gadget::formatBytes(vecFloatBytes(snpEffects.uhatVec))
+             << " (n=" << snpEffects.uhatVec.size() << ")" << endl;
+        cout << "[mem] snpEffects.invGammaVec=" << Gadget::formatBytes(vecFloatBytes(snpEffects.invGammaVec))
+             << " (n=" << snpEffects.invGammaVec.size() << ")" << endl;
+    }
         
     ApproxBayesR(const Data &data, const bool lowRank, const float varGenotypic, const float varResidual, const VectorXf pis, const VectorXf &piPar, const VectorXf gamma, const bool estimatePi, const bool noscale, const bool hsqPercModel, const bool robustMode, const string &alg, const bool message = true):
     BayesR(data, varGenotypic, varResidual, 0.0, pis, piPar, gamma, estimatePi, noscale, hsqPercModel, alg, false)
@@ -1781,6 +1826,7 @@ public:
     , robustMode(robustMode)
     , lowRankModel(lowRank)
     {
+        reportMemory("ApproxBayesR ctor entry (after member init)");
 
         if (alg == "cg") algorithm = cg;
         else if (alg == "MH") algorithm = mh;
@@ -1803,6 +1849,8 @@ public:
             paramSetVec.push_back(&vareBlk);
             paramToPrint.push_back(&nBadSnps);
         }
+
+        reportMemory("ApproxBayesR after param vec wiring");
                         
         if (message) {
             cout << "\nSBayesR" << endl;
