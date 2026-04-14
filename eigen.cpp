@@ -2380,35 +2380,30 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
         pseudoGwasEffectVal.resize(numKeptLDBlocks);
         b_val.setZero(numIncdSnps);
     }
-
-      string parallelReadError;
+    
 #pragma omp parallel for schedule(dynamic)
     for(int i = 0; i < numKeptLDBlocks; i++){
-        if (!parallelReadError.empty()) {
-            continue;
-        }
-try {
-            LDBlockInfo *block = keptLdBlockInfoVec[i];
-            int32_t cur_m = 0;
-            int32_t cur_k = 0;
-            float sumPosEigVal = 0;
-            float oldEigenCutoff =0;
-            VectorXf lambda;
-            MatrixXf U;
+        LDBlockInfo *block = keptLdBlockInfoVec[i];
+        int32_t cur_m = 0;
+        int32_t cur_k = 0;
+        float sumPosEigVal = 0;
+        float oldEigenCutoff =0;
+        VectorXf lambda;
+        MatrixXf U;
 
-            string infile = dirname + "/block" + block->ID + eigenBlockSuffix(quantizedBits, q8Entropy, qSnpColumnQ, qUTransposeQ);
-            FILE *fp = fopen(infile.c_str(), "rb");
-            if(!fp){throw ("Error: can not open the file [" + infile + "] to read.");}
-            readEigenBlockHeader(fp, infile, block->ID, numSnpInRegion[i], cur_m, cur_k, sumPosEigVal, oldEigenCutoff, lambda);
-            if(oldEigenCutoff < eigenCutoff & i == 0){
-                cout << "Warning: current proportion of variance in LD block is set as " + to_string(eigenCutoff)+ ". But the proportion of variance is set as "<< to_string(oldEigenCutoff) + " in "  + infile + ".\n";
-            }
-            const bool useQuantizedThisBlock = qSnpColumnQ && !(eigenCutoff < oldEigenCutoff);
-            const bool useQuantizedUBlock = qUTransposeQ && !(eigenCutoff < oldEigenCutoff);
-            if (qUTransposeQ && qSnpColumnQ) {
-                throw("Error: use either quantized Q per SNP (--ldm-eigen-q*-qc) or quantized U transpose (--ldm-eigen-u*-utc), not both.");
-            }
-    
+        string infile = dirname + "/block" + block->ID + eigenBlockSuffix(quantizedBits, q8Entropy, qSnpColumnQ, qUTransposeQ);
+        FILE *fp = fopen(infile.c_str(), "rb");
+        if(!fp){throw ("Error: can not open the file [" + infile + "] to read.");}
+        readEigenBlockHeader(fp, infile, block->ID, numSnpInRegion[i], cur_m, cur_k, sumPosEigVal, oldEigenCutoff, lambda);
+        if(oldEigenCutoff < eigenCutoff & i == 0){
+            cout << "Warning: current proportion of variance in LD block is set as " + to_string(eigenCutoff)+ ". But the proportion of variance is set as "<< to_string(oldEigenCutoff) + " in "  + infile + ".\n";
+        }
+        const bool useQuantizedThisBlock = qSnpColumnQ && !(eigenCutoff < oldEigenCutoff);
+        const bool useQuantizedUBlock = qUTransposeQ && !(eigenCutoff < oldEigenCutoff);
+        if (qUTransposeQ && qSnpColumnQ) {
+            throw("Error: use either quantized Q per SNP (--ldm-eigen-q*-qc) or quantized U transpose (--ldm-eigen-u*-utc), not both.");
+        }
+
         if (useQuantizedUBlock) {
             QuantizedEigenUBlock ub;
             readEigenBlockPayloadUTransposeRaw(fp, infile, block->ID, cur_m, cur_k, quantizedBits, q8Entropy, ub);
@@ -2515,31 +2510,7 @@ try {
             eigenVecLdBlock[i].resize(0,0);
             quantizedEigenQblocks[i] = QuantizedEigenQBlock();
             quantizedEigenUblocks[i] = QuantizedEigenUBlock();
-            }
-        } catch (const std::string &err) {
-#pragma omp critical
-            {
-                if (parallelReadError.empty()) parallelReadError = err;
-            }
-        } catch (const char *err) {
-#pragma omp critical
-            {
-                if (parallelReadError.empty()) parallelReadError = string(err);
-            }
-        } catch (const std::exception &err) {
-#pragma omp critical
-            {
-                if (parallelReadError.empty()) parallelReadError = err.what();
-            }
-        } catch (...) {
-#pragma omp critical
-            {
-                if (parallelReadError.empty()) parallelReadError = "Unknown exception while reading quantized eigen blocks.";
-            }
         }
-    }
-     if (!parallelReadError.empty()) {
-        throw(parallelReadError);
     }
 }
 

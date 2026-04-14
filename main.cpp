@@ -296,7 +296,11 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
-                               if (opt.analysisType == "GWFM") {
+               if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+                    cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
+                    throw earlyStopToken;
+                }
+                if (opt.analysisType == "GWFM") {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
                 }
                 float bestEigenCutoff = opt.eigenCutoff.size() > 1 ? gctb.tuneEigenCutoff(data, opt) : opt.eigenCutoff[0];
@@ -314,6 +318,11 @@ int main(int argc, const char * argv[]) {
 //                if (opt.outputResults) gctb.outputResults(data, mcmcSampleVec, opt.bayesType, opt.noscale, opt.title);
 //            } else {
              
+            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+                cout << "\nStopping before model selection/build and MCMC start for SBayesR as requested." << endl;
+                throw earlyStopToken;
+            }
+            
             if (opt.nDistAuto) gctb.findBestFitModel(data, opt);
             
             Model *model = gctb.buildModel(data, opt, opt.bedFile, opt.gwasSummaryFile, opt.bayesType, opt.windowWidth,
@@ -323,20 +332,15 @@ int main(int argc, const char * argv[]) {
 //            vector<McmcSamples*> mcmcSampleVec = gctb.runMcmc(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin,
 //                                                              opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
-            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
-    cout << "\nStopping after model selection/build and before MCMC start for SBayesR as requested." << endl;
-#ifdef __linux__
-                cout << "Virtual memory peak (VmPeak): " << getVMPeakKB() << " kB" << endl;
-                cout << "Resident memory peak (VmHWM): " << getMemPeakKB() << " kB" << endl;
-#else
-                cout << "Memory peak reporting is only available on Linux builds." << endl;
-#endif
-                delete model;
-                model = nullptr;
-                throw earlyStopToken;
-            }
-
             MCMC *mcmc = new MCMC();
+            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+    cout << "\nStopping after MCMC object creation and before MCMC run for SBayesR as requested." << endl;
+    delete mcmc;
+    delete model;
+    mcmc = nullptr;
+    model = nullptr;
+    throw earlyStopToken;
+}
             vector<McmcSamples*> mcmcSampleVec = mcmc->run(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin, true,
                                                            opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
