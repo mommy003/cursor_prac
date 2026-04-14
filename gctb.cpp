@@ -1511,6 +1511,13 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         
         cout << boost::format("%10s %25s %20s\n") % cutoff % cor[i] % rel[i];
 
+        // Free per-cutoff temporary allocations to avoid RSS growth during tuning.
+        for (auto *samples : mcmcSampleVeci) {
+            delete samples;
+        }
+        mcmcSampleVeci.clear();
+        delete modeli;
+
     }
     
     data.nGWASblock = nGWASblock;
