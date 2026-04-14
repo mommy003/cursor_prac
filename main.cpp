@@ -7,6 +7,8 @@
 //
 
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -79,6 +81,13 @@ int main(int argc, const char * argv[]) {
     }
     
     const string earlyStopToken = "__EARLY_STOP_SBayesR__";
+    const bool sbayesrEarlyStop = []() {
+        const char *v = std::getenv("GCTB_SBAYESR_EARLY_STOP");
+        if (!v) return false;
+        string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
     
     try {
         
@@ -296,7 +305,7 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
-               if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+               if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
                     cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
                     throw earlyStopToken;
                 }
@@ -318,7 +327,7 @@ int main(int argc, const char * argv[]) {
 //                if (opt.outputResults) gctb.outputResults(data, mcmcSampleVec, opt.bayesType, opt.noscale, opt.title);
 //            } else {
              
-            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+            if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
                 cout << "\nStopping before model selection/build and MCMC start for SBayesR as requested." << endl;
                 throw earlyStopToken;
             }
@@ -333,7 +342,7 @@ int main(int argc, const char * argv[]) {
 //                                                              opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
             MCMC *mcmc = new MCMC();
-            if (opt.analysisType == "SBayes" && opt.bayesType == "R") {
+            if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
     cout << "\nStopping after MCMC object creation and before MCMC run for SBayesR as requested." << endl;
     delete mcmc;
     delete model;
