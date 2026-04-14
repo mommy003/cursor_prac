@@ -1476,18 +1476,36 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
     VectorXf rel(size);
     
     cout << boost::format("%10s %25s %20s\n") % "Cutoff" % "Prediction accuracy (r)" % "Relative accuracy";
+    size_t prevTuneRss = 0;
+    const auto traceTuneMem = [&](const string &label, const float cutoffVal) {
+        if (!Gadget::memReportEnabled()) return;
+        const size_t rss = Gadget::currentRssBytes();
+        cout << "[mem-tune] cutoff=" << cutoffVal << " " << label
+             << " RSS=" << Gadget::formatBytes(rss);
+        if (prevTuneRss > 0) {
+            const long long delta = static_cast<long long>(rss) - static_cast<long long>(prevTuneRss);
+            cout << " (delta " << (delta >= 0 ? "+" : "-")
+                 << Gadget::formatBytes(static_cast<size_t>(std::llabs(delta))) << ")";
+        }
+        cout << endl;
+        prevTuneRss = rss;
+    };
     
     for (unsigned i=0; i<size; ++i) {
         float cutoff = opt.eigenCutoff[i];
+        traceTuneMem("before readEigenMatrixBinaryFileAndMakeWandQ", cutoff);
 
         data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, cutoff, data.pseudoGwasEffectTrn, data.pseudoGwasNtrnBlock, false, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+        traceTuneMem("after readEigenMatrixBinaryFileAndMakeWandQ", cutoff);
         //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, cutoff);
         //data.constructWandQ(data.pseudoGwasEffectTrn, data.pseudoGwasNtrn);
         
         data.initVariances(opt.heritability, opt.propVarRandom);
+        traceTuneMem("after initVariances", cutoff);
         bool nDistAuto = false;
         bool print = false;
         Model *modeli = new ApproxBayesR(data, data.lowRankModel, data.varGenotypic, data.varResidual, opt.pis, opt.piPar, opt.gamma, opt.estimatePi, opt.noscale, opt.hsqPercModel, opt.robustMode, opt.algorithm, print);
+        traceTuneMem("after ApproxBayesR model allocation", cutoff);
         
         vector<McmcSamples*> mcmcSampleVeci;
         MCMC mcmc;
@@ -1496,6 +1514,7 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         unsigned burnin = 100;
         unsigned thin = 1;
         mcmcSampleVeci = mcmc.run(*modeli, 1, chainLength, burnin, thin, print, opt.outputFreq, opt.title, print, print);
+        traceTuneMem("after tuning mcmc.run", cutoff);
 
         VectorXf betaMean;
         for (unsigned i=0; i<mcmcSampleVeci.size(); ++i) {
@@ -1517,6 +1536,7 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         }
         mcmcSampleVeci.clear();
         delete modeli;
+        traceTuneMem("after cleanup per-cutoff temporaries", cutoff);
 
     }
     
