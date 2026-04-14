@@ -88,6 +88,26 @@ int main(int argc, const char * argv[]) {
         for (auto &c : s) c = static_cast<char>(std::tolower(c));
         return (s == "1" || s == "true" || s == "yes" || s == "on");
     }();
+    const bool memTraceSteps = []() {
+        const char *v = std::getenv("GCTB_MEM_TRACE_STEPS");
+        if (!v) return false;
+        string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
+    size_t prevStepRss = 0;
+    const auto traceMemStep = [&](const string &label) {
+        if (!(Gadget::memReportEnabled() || memTraceSteps)) return;
+        size_t rss = Gadget::currentRssBytes();
+        cout << "[mem-step] " << label << " RSS=" << Gadget::formatBytes(rss);
+        if (prevStepRss > 0) {
+            long long delta = static_cast<long long>(rss) - static_cast<long long>(prevStepRss);
+            cout << " (delta " << (delta >= 0 ? "+" : "-")
+                 << Gadget::formatBytes(static_cast<size_t>(std::llabs(delta))) << ")";
+        }
+        cout << endl;
+        prevStepRss = rss;
+    };
     
     try {
         
@@ -293,10 +313,13 @@ int main(int argc, const char * argv[]) {
             data.getLDfriends(opt.pairwiseLDfile, opt.rsqThreshold, opt.title);
         }
         else if (opt.analysisType == "SBayes" || opt.analysisType == "GWFM") {
+            traceMemStep("enter SBayes/GWFM analysis block");
             if (!opt.ldmatrixFile.empty()) {
                 gctb.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.gwasSummaryFile, opt.ldmatrixFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.genMapN, opt.annotationFile, opt.transpose, opt.continuousAnnoFile, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.windowFile, opt.multiLDmat, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.binSnp, opt.readLdmTxt);
+                traceMemStep("after inputSnpInfo from ldmatrix");
             } else if (!opt.eigenMatrixFile.empty()) {  // low-rank model
                 data.mergeLdmInfo("block", opt.eigenMatrixFile, false); // if each block has its own .info file, then merge them
+                traceMemStep("after mergeLdmInfo");
                 gctb.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
                                   opt.gwasSummaryFile, opt.eigenMatrixFile, opt.ldBlockInfoFile,
                                   opt.includeChr, opt.excludeAmbiguousSNP,
@@ -305,20 +328,25 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
+                traceMemStep("after inputSnpInfo from eigen");
                if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
                     cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
                     throw earlyStopToken;
                 }
                 if (opt.analysisType == "GWFM") {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
+                    traceMemStep("after inputPairwiseLD");
                 }
                 float bestEigenCutoff = opt.eigenCutoff.size() > 1 ? gctb.tuneEigenCutoff(data, opt) : opt.eigenCutoff[0];
+                traceMemStep("after tuneEigenCutoff");
                 data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, bestEigenCutoff, data.gwasEffectInBlock, data.nGWASblock, opt.noscale, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+                traceMemStep("after readEigenMatrixBinaryFileAndMakeWandQ");
                 if (opt.writeWandQ) data.outputWandQ("w_and_Q");
                 //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, bestEigenCutoff);
                 //data.constructWandQ(data.gwasEffectInBlock, data.numKeptInds);
             } else {
                 gctb.inputSnpInfo(data, opt.bedFile, opt.gwasSummaryFile, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale);
+                traceMemStep("after inputSnpInfo from bed");
             }
             
             data.label = opt.title;
@@ -333,15 +361,18 @@ int main(int argc, const char * argv[]) {
             }
             
             if (opt.nDistAuto) gctb.findBestFitModel(data, opt);
+            traceMemStep("after findBestFitModel");
             
             Model *model = gctb.buildModel(data, opt, opt.bedFile, opt.gwasSummaryFile, opt.bayesType, opt.windowWidth,
                                            opt.heritability, opt.propVarRandom, opt.pi, opt.piAlpha, opt.piBeta, opt.estimatePi, opt.noscale, opt.pis, opt.piPar, opt.gamma, opt.estimateSigmaSq, opt.phi, opt.kappa,
                                            opt.algorithm, opt.snpFittedPerWindow, opt.varS, opt.S, opt.overdispersion, opt.estimatePS, opt.icrsq, opt.spouseCorrelation, opt.diagnosticMode, opt.hsqPercModel, opt.perSnpGV, opt.robustMode, opt.nDistAuto, opt.estimateRsqEnrich);
+            traceMemStep("after buildModel");
             
 //            vector<McmcSamples*> mcmcSampleVec = gctb.runMcmc(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin,
 //                                                              opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
             MCMC *mcmc = new MCMC();
+            traceMemStep("after MCMC object creation");
             if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
     cout << "\nStopping after MCMC object creation and before MCMC run for SBayesR as requested." << endl;
     delete mcmc;
@@ -352,6 +383,7 @@ int main(int argc, const char * argv[]) {
 }
             vector<McmcSamples*> mcmcSampleVec = mcmc->run(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin, true,
                                                            opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
+            traceMemStep("after mcmc->run");
 
             if (mcmc->action == mcmc->restart_and_use_robust_model) {
                 cout << "\nRestarting MCMC with a more robust parameterisation for SBayes" << opt.bayesType << " ..." << endl;

@@ -7,9 +7,15 @@
 //
 
 #include "gadgets.hpp"
+#include <cctype>
+#include <cstdlib>
+#include <iomanip>
+#include <sstream>
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#elif defined(__linux__)
+#include <unistd.h>
 #endif
 
 void Gadget::Tokenizer::getTokens(const string &str, const string &sep){
@@ -269,6 +275,15 @@ size_t Gadget::currentRssBytes() {
         return 0;
     }
     return static_cast<size_t>(info.resident_size);
+#elif defined(__linux__)
+    std::ifstream in("/proc/self/statm");
+    if (!in.is_open()) return 0;
+    size_t totalPages = 0;
+    size_t residentPages = 0;
+    in >> totalPages >> residentPages;
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) return 0;
+    return residentPages * static_cast<size_t>(pageSize);
 #else
     return 0;
 #endif
