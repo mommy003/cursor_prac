@@ -9,6 +9,8 @@
 #include "data.hpp"
 #include "quantized_eigen_q.hpp"
 #include "quantized_eigen_u.hpp"
+#include <cctype>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <zlib.h>
@@ -2362,6 +2364,13 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
     quantizedEigenQblocks.resize(numKeptLDBlocks);
     quantizedEigenUblocks.clear();
     quantizedEigenUblocks.resize(numKeptLDBlocks);
+    const bool forceQuantizedPath = []() {
+        const char *v = std::getenv("GCTB_FORCE_QUANTIZED_PATH");
+        if (!v) return false;
+        std::string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
 
     
     //Constructing pseudo summary statistics for training and validation data sets, with 90% sample size for training and 10% for validation
@@ -2398,8 +2407,13 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
         if(oldEigenCutoff < eigenCutoff & i == 0){
             cout << "Warning: current proportion of variance in LD block is set as " + to_string(eigenCutoff)+ ". But the proportion of variance is set as "<< to_string(oldEigenCutoff) + " in "  + infile + ".\n";
         }
-        const bool useQuantizedThisBlock = qSnpColumnQ && !(eigenCutoff < oldEigenCutoff);
-        const bool useQuantizedUBlock = qUTransposeQ && !(eigenCutoff < oldEigenCutoff);
+        const bool requiresTruncation = (eigenCutoff < oldEigenCutoff);
+        const bool canForceQuantized = forceQuantizedPath && requiresTruncation;
+        if (canForceQuantized && i == 0) {
+            cout << "Warning: GCTB_FORCE_QUANTIZED_PATH is enabled. Keeping quantized loading even though requested eigen cutoff is lower than file cutoff; this favors memory usage over stricter truncation." << endl;
+        }
+        const bool useQuantizedThisBlock = qSnpColumnQ && (!requiresTruncation || canForceQuantized);
+        const bool useQuantizedUBlock = qUTransposeQ && (!requiresTruncation || canForceQuantized);
         if (qUTransposeQ && qSnpColumnQ) {
             throw("Error: use either quantized Q per SNP (--ldm-eigen-q*-qc) or quantized U transpose (--ldm-eigen-u*-utc), not both.");
         }
