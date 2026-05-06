@@ -1984,6 +1984,113 @@ static void readEigenBlockPayloadUTransposeRaw(FILE *fp, const string &infile, c
     }
 }
 
+/**
+ * Infer whether stored U-transpose scales already include sqrt(lambda) by checking
+ * which convention reconstructs unit-norm eigenvector columns more closely.
+ */
+static bool detectUTransposeScalesIncludeSqrtLambda(const QuantizedEigenUBlock &ub) {
+    const int k = ub.k;
+    const int m = ub.m;
+    if (k <= 0 || m <= 0 || ub.eigenScales.size() != k || ub.lambda.size() != k || ub.raw.empty()) {
+        return false;
+    }
+
+    const float invB = (ub.bits == 4) ? (1.0f / 7.0f) : (ub.bits == 8) ? (1.0f / 127.0f) : (ub.bits == 16) ? (1.0f / 32767.0f) : 0.0f;
+    if (invB <= 0.0f) return false;
+    const float invB2 = invB * invB;
+
+    vector<double> qsumSq(k, 0.0);
+    if (ub.bits == 8) {
+        const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+        for (int i = 0; i < m; ++i) {
+            const int rowOff = i * k;
+            for (int j = 0; j < k; ++j) {
+                const double v = static_cast<double>(q[rowOff + j]);
+                qsumSq[j] += v * v;
+            }
+        }
+    } else if (ub.bits == 16) {
+        const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+        for (int i = 0; i < m; ++i) {
+            const int rowOff = i * k;
+            for (int j = 0; j < k; ++j) {
+                const double v = static_cast<double>(q[rowOff + j]);
+                qsumSq[j] += v * v;
+            }
+        }
+    } else if (ub.bits == 4) {
+        const int packed_k = (k + 1) / 2;
+        for (int i = 0; i < m; ++i) {
+            const int rowOff = i * packed_k;
+            for (int j = 0; j < k; ++j) {
+                const uint8_t bb = ub.raw[rowOff + (j / 2)];
+                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                const double v = static_cast<double>(qq);
+                qsumSq[j] += v * v;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    const double tiny = 1e-20;
+    double scoreUScale = 0.0;
+    double scoreQScale = 0.0;
+    int used = 0;
+    for (int j = 0; j < k; ++j) {
+        const double lam = static_cast<double>(ub.lambda[j]);
+        const double s = static_cast<double>(ub.eigenScales[j]);
+        if (lam <= tiny || s <= tiny || qsumSq[j] <= tiny) continue;
+
+        const double colNorm2IfUScale = qsumSq[j] * s * s * invB2;
+        const double colNorm2IfQScale = colNorm2IfUScale / lam;
+
+        scoreUScale += fabs(log(max(colNorm2IfUScale, tiny)));
+        scoreQScale += fabs(log(max(colNorm2IfQScale, tiny)));
+        ++used;
+    }
+    if (used == 0) return false;
+
+    // Require a clear average-score gap to avoid unstable decisions on noisy blocks.
+    const double avgUScale = scoreUScale / static_cast<double>(used);
+    const double avgQScale = scoreQScale / static_cast<double>(used);
+    return (avgQScale + 0.15 < avgUScale);
+}
+
+enum class UTransposeScaleMode {
+    LegacyUScale = 0,  // Original behavior: eigenScales are max|U(:,j)|.
+    AutoDetect = 1,    // Detect whether eigenScales include sqrt(lambda).
+    ForceQScale = 2    // Treat eigenScales as max|sqrt(lambda_j) * U(:,j)|.
+};
+
+/**
+ * Select convention for .eigen.u*utc scale interpretation.
+ * Default is legacy behavior to avoid changing historical results.
+ *
+ * GCTB_UUTC_SCALE_MODE:
+ *   - "legacy" / "u" / "uscale" (default)
+ *   - "auto"
+ *   - "q" / "qscale" / "sqrtlambda"
+ */
+static UTransposeScaleMode getUTransposeScaleMode() {
+    const char *env = std::getenv("GCTB_UUTC_SCALE_MODE");
+    if (!env) return UTransposeScaleMode::LegacyUScale;
+    string s(env);
+    for (auto &c : s) c = static_cast<char>(std::tolower(c));
+    if (s == "auto") return UTransposeScaleMode::AutoDetect;
+    if (s == "q" || s == "qscale" || s == "sqrtlambda" || s == "include-sqrt-lambda") {
+        return UTransposeScaleMode::ForceQScale;
+    }
+    return UTransposeScaleMode::LegacyUScale;
+}
+
+static bool resolveUTransposeScalesIncludeSqrtLambda(const QuantizedEigenUBlock &ub) {
+    const UTransposeScaleMode mode = getUTransposeScaleMode();
+    if (mode == UTransposeScaleMode::ForceQScale) return true;
+    if (mode == UTransposeScaleMode::AutoDetect) return detectUTransposeScalesIncludeSqrtLambda(ub);
+    return false;
+}
+
 static VectorXf computeWcorrFromQuantizedU(const QuantizedEigenUBlock &ub, const VectorXf &b){
     const int k = ub.k;
     const int m = ub.m;
@@ -2304,6 +2411,7 @@ void Data::readEigenBlockData(const string &dirname, const string &blockID, cons
         ub.m = cur_m;
         ub.bits = quantizedBits;
         ub.lambda = lambda;
+        ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
         fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
         U.resize(cur_m, cur_k);
         const float invB = (quantizedBits == 4) ? (1.0f / 7.0f) : (quantizedBits == 8) ? (1.0f / 127.0f) : (1.0f / 32767.0f);
@@ -2311,14 +2419,24 @@ void Data::readEigenBlockData(const string &dirname, const string &blockID, cons
             const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
             for (int i = 0; i < cur_m; ++i) {
                 for (int j = 0; j < cur_k; ++j) {
-                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * ub.eigenScales[j] * invB;
+                    float fac = ub.eigenScales[j] * invB;
+                    if (ub.scalesIncludeSqrtLambda) {
+                        const float lam = ub.lambda[j];
+                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                    }
+                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
                 }
             }
         } else if (quantizedBits == 16) {
             const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
             for (int i = 0; i < cur_m; ++i) {
                 for (int j = 0; j < cur_k; ++j) {
-                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * ub.eigenScales[j] * invB;
+                    float fac = ub.eigenScales[j] * invB;
+                    if (ub.scalesIncludeSqrtLambda) {
+                        const float lam = ub.lambda[j];
+                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                    }
+                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
                 }
             }
         } else if (quantizedBits == 4) {
@@ -2327,7 +2445,12 @@ void Data::readEigenBlockData(const string &dirname, const string &blockID, cons
                 for (int j = 0; j < cur_k; ++j) {
                     const uint8_t bb = ub.raw[i * packed_k + (j / 2)];
                     const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
-                    U(i, j) = static_cast<float>(qq) * ub.eigenScales[j] * invB;
+                    float fac = ub.eigenScales[j] * invB;
+                    if (ub.scalesIncludeSqrtLambda) {
+                        const float lam = ub.lambda[j];
+                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                    }
+                    U(i, j) = static_cast<float>(qq) * fac;
                 }
             }
         }
@@ -2426,6 +2549,7 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
             ub.m = cur_m;
             ub.bits = quantizedBits;
             ub.lambda = lambda;
+            ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
             fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
 
             eigenValLdBlock[i] = lambda;

@@ -54,6 +54,11 @@ struct QuantizedEigenUBlock {
     int bits = 0;
     VectorXf lambda;
     VectorXf eigenScales;
+    /**
+     * True if stored eigenScales already include sqrt(lambda), i.e. they are Q-column scales
+     * instead of U-column scales. Auto-detected at load for compatibility across generators.
+     */
+    bool scalesIncludeSqrtLambda = false;
     VectorXf sqrtLambdaScaleDequant;
     vector<uint8_t> raw;
 };
