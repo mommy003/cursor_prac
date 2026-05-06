@@ -2091,6 +2091,60 @@ static bool resolveUTransposeScalesIncludeSqrtLambda(const QuantizedEigenUBlock 
     return false;
 }
 
+/** Materialize float U(m x k) from quantized U block with selected scale convention. */
+static void materializeFloatUFromQuantizedU(const QuantizedEigenUBlock &ub, MatrixXf &U) {
+    const int cur_m = ub.m;
+    const int cur_k = ub.k;
+    U.resize(cur_m, cur_k);
+    const float invB = (ub.bits == 4) ? (1.0f / 7.0f) : (ub.bits == 8) ? (1.0f / 127.0f) : (ub.bits == 16) ? (1.0f / 32767.0f) : 0.0f;
+    if (invB <= 0.0f) {
+        U.setZero();
+        return;
+    }
+
+    if (ub.bits == 8) {
+        const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+        for (int i = 0; i < cur_m; ++i) {
+            for (int j = 0; j < cur_k; ++j) {
+                float fac = ub.eigenScales[j] * invB;
+                if (ub.scalesIncludeSqrtLambda) {
+                    const float lam = ub.lambda[j];
+                    fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                }
+                U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
+            }
+        }
+    } else if (ub.bits == 16) {
+        const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+        for (int i = 0; i < cur_m; ++i) {
+            for (int j = 0; j < cur_k; ++j) {
+                float fac = ub.eigenScales[j] * invB;
+                if (ub.scalesIncludeSqrtLambda) {
+                    const float lam = ub.lambda[j];
+                    fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                }
+                U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
+            }
+        }
+    } else if (ub.bits == 4) {
+        const int packed_k = (cur_k + 1) / 2;
+        for (int i = 0; i < cur_m; ++i) {
+            for (int j = 0; j < cur_k; ++j) {
+                const uint8_t bb = ub.raw[i * packed_k + (j / 2)];
+                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                float fac = ub.eigenScales[j] * invB;
+                if (ub.scalesIncludeSqrtLambda) {
+                    const float lam = ub.lambda[j];
+                    fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
+                }
+                U(i, j) = static_cast<float>(qq) * fac;
+            }
+        }
+    } else {
+        U.setZero();
+    }
+}
+
 static VectorXf computeWcorrFromQuantizedU(const QuantizedEigenUBlock &ub, const VectorXf &b){
     const int k = ub.k;
     const int m = ub.m;
@@ -2413,47 +2467,7 @@ void Data::readEigenBlockData(const string &dirname, const string &blockID, cons
         ub.lambda = lambda;
         ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
         fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
-        U.resize(cur_m, cur_k);
-        const float invB = (quantizedBits == 4) ? (1.0f / 7.0f) : (quantizedBits == 8) ? (1.0f / 127.0f) : (1.0f / 32767.0f);
-        if (quantizedBits == 8) {
-            const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
-            for (int i = 0; i < cur_m; ++i) {
-                for (int j = 0; j < cur_k; ++j) {
-                    float fac = ub.eigenScales[j] * invB;
-                    if (ub.scalesIncludeSqrtLambda) {
-                        const float lam = ub.lambda[j];
-                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
-                    }
-                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
-                }
-            }
-        } else if (quantizedBits == 16) {
-            const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
-            for (int i = 0; i < cur_m; ++i) {
-                for (int j = 0; j < cur_k; ++j) {
-                    float fac = ub.eigenScales[j] * invB;
-                    if (ub.scalesIncludeSqrtLambda) {
-                        const float lam = ub.lambda[j];
-                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
-                    }
-                    U(i, j) = static_cast<float>(q[i * cur_k + j]) * fac;
-                }
-            }
-        } else if (quantizedBits == 4) {
-            const int packed_k = (cur_k + 1) / 2;
-            for (int i = 0; i < cur_m; ++i) {
-                for (int j = 0; j < cur_k; ++j) {
-                    const uint8_t bb = ub.raw[i * packed_k + (j / 2)];
-                    const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
-                    float fac = ub.eigenScales[j] * invB;
-                    if (ub.scalesIncludeSqrtLambda) {
-                        const float lam = ub.lambda[j];
-                        fac = (lam > 0.f) ? (fac / sqrtf(lam)) : 0.f;
-                    }
-                    U(i, j) = static_cast<float>(qq) * fac;
-                }
-            }
-        }
+        materializeFloatUFromQuantizedU(ub, U);
         return;
     }
     if (quantizedBits) readEigenBlockPayloadQuantized(fp, infile, blockID, cur_m, cur_k, U, lambda, quantizedBits, q8Entropy, qSnpColumnQ);
@@ -2612,8 +2626,23 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
             quantizedEigenQblocks[i] = std::move(qb);
             quantizedEigenUblocks[i] = QuantizedEigenUBlock();
         } else {
-            if (quantizedBits) readEigenBlockPayloadQuantized(fp, infile, block->ID, cur_m, cur_k, U, lambda, quantizedBits, q8Entropy, qSnpColumnQ);
-            else readEigenBlockPayloadFloat(fp, infile, block->ID, cur_m, cur_k, U);
+            if (quantizedBits) {
+                if (qUTransposeQ) {
+                    QuantizedEigenUBlock ub;
+                    readEigenBlockPayloadUTransposeRaw(fp, infile, block->ID, cur_m, cur_k, quantizedBits, q8Entropy, ub);
+                    ub.k = cur_k;
+                    ub.m = cur_m;
+                    ub.bits = quantizedBits;
+                    ub.lambda = lambda;
+                    ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
+                    fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
+                    materializeFloatUFromQuantizedU(ub, U);
+                } else {
+                    readEigenBlockPayloadQuantized(fp, infile, block->ID, cur_m, cur_k, U, lambda, quantizedBits, q8Entropy, qSnpColumnQ);
+                }
+            } else {
+                readEigenBlockPayloadFloat(fp, infile, block->ID, cur_m, cur_k, U);
+            }
             fclose(fp);
 
             if (eigenCutoff < oldEigenCutoff) {
