@@ -2051,8 +2051,44 @@ static bool detectUTransposeScalesIncludeSqrtLambda(const QuantizedEigenUBlock &
     }
     if (used == 0) return false;
 
-    // Small margin avoids flip-flopping in near-tie blocks.
-    return (scoreQScale + 1e-3 < scoreUScale);
+    // Require a clear average-score gap to avoid unstable decisions on noisy blocks.
+    const double avgUScale = scoreUScale / static_cast<double>(used);
+    const double avgQScale = scoreQScale / static_cast<double>(used);
+    return (avgQScale + 0.15 < avgUScale);
+}
+
+enum class UTransposeScaleMode {
+    LegacyUScale = 0,  // Original behavior: eigenScales are max|U(:,j)|.
+    AutoDetect = 1,    // Detect whether eigenScales include sqrt(lambda).
+    ForceQScale = 2    // Treat eigenScales as max|sqrt(lambda_j) * U(:,j)|.
+};
+
+/**
+ * Select convention for .eigen.u*utc scale interpretation.
+ * Default is legacy behavior to avoid changing historical results.
+ *
+ * GCTB_UUTC_SCALE_MODE:
+ *   - "legacy" / "u" / "uscale" (default)
+ *   - "auto"
+ *   - "q" / "qscale" / "sqrtlambda"
+ */
+static UTransposeScaleMode getUTransposeScaleMode() {
+    const char *env = std::getenv("GCTB_UUTC_SCALE_MODE");
+    if (!env) return UTransposeScaleMode::LegacyUScale;
+    string s(env);
+    for (auto &c : s) c = static_cast<char>(std::tolower(c));
+    if (s == "auto") return UTransposeScaleMode::AutoDetect;
+    if (s == "q" || s == "qscale" || s == "sqrtlambda" || s == "include-sqrt-lambda") {
+        return UTransposeScaleMode::ForceQScale;
+    }
+    return UTransposeScaleMode::LegacyUScale;
+}
+
+static bool resolveUTransposeScalesIncludeSqrtLambda(const QuantizedEigenUBlock &ub) {
+    const UTransposeScaleMode mode = getUTransposeScaleMode();
+    if (mode == UTransposeScaleMode::ForceQScale) return true;
+    if (mode == UTransposeScaleMode::AutoDetect) return detectUTransposeScalesIncludeSqrtLambda(ub);
+    return false;
 }
 
 static VectorXf computeWcorrFromQuantizedU(const QuantizedEigenUBlock &ub, const VectorXf &b){
@@ -2375,7 +2411,7 @@ void Data::readEigenBlockData(const string &dirname, const string &blockID, cons
         ub.m = cur_m;
         ub.bits = quantizedBits;
         ub.lambda = lambda;
-        ub.scalesIncludeSqrtLambda = detectUTransposeScalesIncludeSqrtLambda(ub);
+        ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
         fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
         U.resize(cur_m, cur_k);
         const float invB = (quantizedBits == 4) ? (1.0f / 7.0f) : (quantizedBits == 8) ? (1.0f / 127.0f) : (1.0f / 32767.0f);
@@ -2513,7 +2549,7 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const fl
             ub.m = cur_m;
             ub.bits = quantizedBits;
             ub.lambda = lambda;
-            ub.scalesIncludeSqrtLambda = detectUTransposeScalesIncludeSqrtLambda(ub);
+            ub.scalesIncludeSqrtLambda = resolveUTransposeScalesIncludeSqrtLambda(ub);
             fillQuantizedEigenSqrtLambdaScaleDequant(ub, quantizedBits);
 
             eigenValLdBlock[i] = lambda;
