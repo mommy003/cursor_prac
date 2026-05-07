@@ -15,6 +15,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <fstream>
 #include <set>
 #include <bitset>
@@ -26,11 +27,41 @@
 #include <cstdio>
 #include "gadgets.hpp"
 #include "stat.hpp"
+#include "quantizer.hpp"
 
 using namespace std;
 using namespace Eigen;
 
 typedef SparseMatrix<float, Eigen::ColMajor, long long> SpMat;
+
+/** Raw SNP-column–scaled quantized Q (per LD block): Q(j,i) ≈ q(j,i) * snpScales[i] / bound. */
+struct QuantizedEigenQBlock {
+    int k = 0;
+    int m = 0;
+    int bits = 0;
+    bool q8e = false;
+    VectorXf lambda;
+    VectorXf snpScales;
+    /** Per-SNP scale/bound = snpScales[i]/quantBound; filled at load (avoids bound math in MCMC). */
+    VectorXf snpDequantScale;
+    vector<uint8_t> raw;
+};
+
+/** Quantized U (m×k), raw row SNP i col j at index i*k+j. Q = diag(sqrt(λ)) U'. */
+struct QuantizedEigenUBlock {
+    int k = 0;
+    int m = 0;
+    int bits = 0;
+    VectorXf lambda;
+    VectorXf eigenScales;
+    /**
+     * True if stored eigenScales already include sqrt(lambda), i.e. they are Q-column scales
+     * instead of U-column scales. Auto-detected at load for compatibility across generators.
+     */
+    bool scalesIncludeSqrtLambda = false;
+    VectorXf sqrtLambdaScaleDequant;
+    vector<uint8_t> raw;
+};
 
 class AnnoInfo;
 
@@ -521,6 +552,10 @@ public:
      vector<MatrixXf> eigenVecLdBlock; // store U   (per  LD block matrix = U * diag(lambda)* V')  per gene LD
      vector<VectorXf> wcorrBlocks;
      vector<MatrixXf> Qblocks;
+     /** When non-empty for a block and Qblocks[blk] is empty, use quantized Q instead of float Q. */
+     vector<QuantizedEigenQBlock> quantizedEigenQblocks;
+     /** Quantized U (transpose-friendly layout); mutually exclusive with quantizedEigenQblocks per run. */
+     vector<QuantizedEigenUBlock> quantizedEigenUblocks;
      ///////// ld block end  ////////
     ///
     map<int, vector<int>> ldblock2gwasSnpMap;
@@ -679,23 +714,23 @@ public:
     void impG(const unsigned block, double diag_mod = 0.1);
 
     ///////////// read LD matrix eigen-decomposition data for LD blocks
-    void readEigenMatrix(const string &eigenMatrixFile, const float eigenCutoff, const bool readBinary = false, const bool writeLdmTxt = false, const string &outputDir = ".");
+    void readEigenMatrix(const string &eigenMatrixFile, const float eigenCutoff, const bool readBinary = false, const bool writeLdmTxt = false, const string &outputDir = ".", const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
     void readBlockLDmatrixAndDoEigenDecomposition(const string &LDmatrixFile, const unsigned block, const float eigenCutoff, const bool writeLdmTxt);
     void readBlockLdmInfoFile(const string &dirname, const unsigned block = 0);
     void readBlockLdmSnpInfoFile(const string &dirname, const unsigned block = 0);
     void readBlockLDMbinaryFile(const string &svdLDfile, const float eigenCutoff);
     vector<LDBlockInfo *> makeKeptLDBlockInfoVec(const vector<LDBlockInfo *> &ldBlockInfoVec);
     
-    void readEigenMatrixBinaryFile(const string &eigenMatrixFile, const float eigenCutoff, const bool writeLdmTxt = false, const string &outputDir = ".");
+    void readEigenMatrixBinaryFile(const string &eigenMatrixFile, const float eigenCutoff, const bool writeLdmTxt = false, const string &outputDir = ".", const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
     
-    void readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const float eigenCutoff, const vector<VectorXf> &GWASeffects, const VectorXf &nGWASblock, const bool noscale, const bool makePseudoSummary);
+    void readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const float eigenCutoff, const vector<VectorXf> &GWASeffects, const VectorXf &nGWASblock, const bool noscale, const bool makePseudoSummary, const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
 
     
     ///////////// merge eigen matrices
     void mergeMultiEigenLDMatrices(const string & infoFile, const string &filename, const string LDmatType);
 
     //////////// Step 2.2 Build multiple maps
-    void buildMMEeigen(const string &dirname, const bool sampleOverlap, const float eigenCutoff, const bool noscale); // for eigen decomposition
+    void buildMMEeigen(const string &dirname, const bool sampleOverlap, const float eigenCutoff, const bool noscale, const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false); // for eigen decomposition
     void includeMatchedBlocks(void);
 
     //////////// Step 2.3 build model matrix
@@ -716,9 +751,12 @@ public:
     void outputWandQ(const string &dirname);
     void readUnconvergedSnplist(const string &snplistFile);
     
-    void convert(const string &eigenMatrixFile, const string &snplistFile, const string &title);
+    void convert(const string &eigenMatrixFile, const string &snplistFile, const string &title, const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
     
-    void getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqThreshold, const string &title);
+    void getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqThreshold, const string &title, const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
+    void readEigenBlockData(const string &dirname, const string &blockID, const int expectedNumSnp,
+                            int32_t &cur_m, int32_t &cur_k, float &sumPosEigVal, float &oldEigenCutoff,
+                            VectorXf &lambda, MatrixXf &U, const int quantizedBits = 0, const bool q8Entropy = false, const bool qSnpColumnQ = false, const bool qUTransposeQ = false);
     
     void inputPairwiseLD(const string &ldfile, const float rsqThreshold);
     void inputLDfriends(const string &ldfriendFile);

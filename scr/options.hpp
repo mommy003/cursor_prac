@@ -112,7 +112,19 @@ public:
     bool nDistAuto;  // automatically determine the number of mixture distributions
     bool writeWandQ; // output w and Q in text format
     bool estimateRsqEnrich;  // estimate prediction R2 enrichment
-    
+    int eigenMatrixQuantBits;
+    bool eigenMatrixQ8Entropy;  ///< true if --ldm-eigen-q8e (zlib-compressed .eigen.q8e.bin)
+    bool eigenMatrixQSnpColumn; ///< true for .eigen.q*qc.bin (Q per SNP column scales)
+    bool eigenMatrixUTranspose; ///< true for .eigen.u*utc.bin (quantized U, sqrt(λ)*scale fused at load)
+
+    /** --quantize-eigen: same semantics as the eigen_quantize tool (see main.cpp). */
+    int quantEigenBits;
+    bool quantEigenEntropy;
+    bool quantEigenQPerSnp;
+    bool quantEigenUTranspose;
+    string quantEigenInputDir;
+    string quantEigenOutputDir;
+
     string eigCutMethod = "value";
     float eigThreshold = 0.001;
 
@@ -264,7 +276,18 @@ public:
         nDistAuto               = false;
         writeWandQ              = false;
         estimateRsqEnrich       = false;
-        
+        eigenMatrixQuantBits    = 0;
+        eigenMatrixQ8Entropy    = false;
+        eigenMatrixQSnpColumn     = false;
+        eigenMatrixUTranspose     = false;
+
+        quantEigenBits          = 8;
+        quantEigenEntropy       = false;
+        quantEigenQPerSnp       = false;
+        quantEigenUTranspose    = false;
+        quantEigenInputDir      = "";
+        quantEigenOutputDir     = "";
+
         title                   = "gctb";
         analysisType            = "Bayes";
         bayesType               = "C";

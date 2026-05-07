@@ -8,9 +8,98 @@
 
 #include "options.hpp"
 #include <limits>
+#include <vector>
 
 void Options::inputOptions(const int argc, const char* argv[]){
     stringstream ss;
+
+    bool hasQuantizeEigen = false;
+    for (unsigned i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--quantize-eigen")) {
+            hasQuantizeEigen = true;
+            break;
+        }
+    }
+    if (hasQuantizeEigen) {
+        analysisType = "QuantizeEigen";
+        quantEigenBits = 8;
+        quantEigenEntropy = false;
+        quantEigenQPerSnp = false;
+        quantEigenUTranspose = false;
+        vector<string> positional;
+        for (unsigned i = 1; i < argc; ++i) {
+            if (!strcmp(argv[i], "--quantize-eigen")) {
+                continue;
+            }
+            if (!strcmp(argv[i], "--bits")) {
+                if (++i >= (unsigned)argc) {
+                    throw("\nError: --bits requires a value (4, 8, or 16).\n");
+                }
+                quantEigenBits = stoi(argv[i]);
+                continue;
+            }
+            if (!strcmp(argv[i], "--entropy")) {
+                quantEigenEntropy = true;
+                continue;
+            }
+            if (!strcmp(argv[i], "--q-per-snp")) {
+                quantEigenQPerSnp = true;
+                continue;
+            }
+            if (!strcmp(argv[i], "--u-transpose")) {
+                quantEigenUTranspose = true;
+                continue;
+            }
+            if (!strcmp(argv[i], "--thread")) {
+                if (++i >= (unsigned)argc) {
+                    throw("\nError: --thread requires a value.\n");
+                }
+                numThread = stoi(argv[i]);
+                continue;
+            }
+            if (!strncmp(argv[i], "--", 2)) {
+                string err = "\nError: unknown option in --quantize-eigen mode: ";
+                err += argv[i];
+                err += "\n";
+                throw(err);
+            }
+            positional.push_back(argv[i]);
+        }
+        if (positional.size() != 2) {
+            throw("\nError: --quantize-eigen requires exactly two path arguments: <input_folder> <output_folder>\n"
+                  "Example: gctb --quantize-eigen --bits 8 --q-per-snp /path/to/eigen_bin /path/to/out\n");
+        }
+        quantEigenInputDir = positional[0];
+        quantEigenOutputDir = positional[1];
+        if (quantEigenBits != 4 && quantEigenBits != 8 && quantEigenBits != 16) {
+            throw("\nError: --bits must be 4, 8, or 16 for --quantize-eigen.\n");
+        }
+        if (quantEigenEntropy && quantEigenBits != 8) {
+            throw("\nError: --entropy is only supported with 8-bit quantization.\n");
+        }
+        if (quantEigenQPerSnp && quantEigenUTranspose) {
+            throw("\nError: choose only one layout option: --q-per-snp or --u-transpose.\n");
+        }
+        ss << "\nOptions:\n\n";
+        ss << "--quantize-eigen " << quantEigenInputDir << " " << quantEigenOutputDir << "\n";
+        ss << "--bits " << quantEigenBits << "\n";
+        if (quantEigenEntropy) {
+            ss << "--entropy\n";
+        }
+        if (quantEigenQPerSnp) {
+            ss << "--q-per-snp\n";
+        }
+        if (quantEigenUTranspose) {
+            ss << "--u-transpose\n";
+        }
+        if (numThread != 1) {
+            ss << "--thread " << numThread << "\n";
+        }
+        cout << ss.str() << endl;
+        setThread();
+        return;
+    }
+
     for (unsigned i=1; i<argc; ++i) {
         if (!strcmp(argv[i], "--inp-file")) {
             optionFile = argv[++i];
@@ -231,7 +320,107 @@ void Options::inputOptions(const int argc, const char* argv[]){
         }
         else if (!strcmp(argv[i], "--ldm-eigen")) {
             eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 0;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = false;
             ss << "--ldm-eigen " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q4")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 4;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q4 " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q8")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q8 " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q8e")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = true;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q8e " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q16")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 16;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q16 " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-u4-utc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 4;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = true;
+            ss << "--ldm-eigen-u4-utc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-u8-utc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = true;
+            ss << "--ldm-eigen-u8-utc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-u8e-utc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = true;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = true;
+            ss << "--ldm-eigen-u8e-utc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-u16-utc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 16;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = false;
+            eigenMatrixUTranspose = true;
+            ss << "--ldm-eigen-u16-utc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q4-qc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 4;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = true;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q4-qc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q8-qc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = true;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q8-qc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q8eqc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 8;
+            eigenMatrixQ8Entropy = true;
+            eigenMatrixQSnpColumn = true;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q8eqc " << argv[i] << "\n";
+        }
+        else if (!strcmp(argv[i], "--ldm-eigen-q16-qc")) {
+            eigenMatrixFile = argv[++i];
+            eigenMatrixQuantBits = 16;
+            eigenMatrixQ8Entropy = false;
+            eigenMatrixQSnpColumn = true;
+            eigenMatrixUTranspose = false;
+            ss << "--ldm-eigen-q16-qc " << argv[i] << "\n";
         }
         else if (!strcmp(argv[i], "--ldm-eigen-cutoff")) {
             Gadget::Tokenizer strvec;

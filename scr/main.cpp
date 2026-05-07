@@ -38,6 +38,28 @@ int main(int argc, const char * argv[]) {
         Options opt;
         opt.inputOptions(argc, argv);
         
+        if (opt.analysisType == "QuantizeEigen") {
+            eigen_quantize::QuantizationOptions qopt;
+            qopt.bits = opt.quantEigenBits;
+            qopt.entropy_coding = opt.quantEigenEntropy;
+            qopt.q_per_snp_column = opt.quantEigenQPerSnp;
+            qopt.u_transpose = opt.quantEigenUTranspose;
+            try {
+                const auto summary = eigen_quantize::quantize_directory(opt.quantEigenInputDir, opt.quantEigenOutputDir, qopt);
+                cout << "Completed " << summary.num_files << " files with q" << qopt.bits;
+                if (qopt.q_per_snp_column) cout << " (Q per SNP col)";
+                if (qopt.entropy_coding) cout << " (entropy-coded)";
+                cout << ".\nTotal bytes: " << summary.total_original_bytes << " -> " << summary.total_quantized_bytes << endl;
+            } catch (const std::exception& error) {
+                cerr << "Quantize eigen error: " << error.what() << endl;
+                return 1;
+            }
+            timer.getTime();
+            cout << "\nAnalysis finished: " << timer.getDate();
+            cout << "Computational time: " << timer.format(timer.getElapse()) << endl;
+            return 0;
+        }
+        
         if (opt.seed) Stat::seedEngine(opt.seed);
         else          Stat::seedEngine(011415);  // fix the random seed if not given due to the use of MPI
         
@@ -194,15 +216,15 @@ int main(int argc, const char * argv[]) {
         }
         else if (opt.analysisType == "Convert") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff());
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
                 data.inputMatchedSnpResults(opt.snpResFile);
-                data.convert(opt.eigenMatrixFile, opt.includeSnpFile, opt.title);
+                data.convert(opt.eigenMatrixFile, opt.includeSnpFile, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "GetLD") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff());
-                data.getLDfromEigenMatrix(opt.eigenMatrixFile, opt.rsqThreshold, opt.title);
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+                data.getLDfromEigenMatrix(opt.eigenMatrixFile, opt.rsqThreshold, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "GetLDfriends") {
@@ -228,7 +250,7 @@ int main(int argc, const char * argv[]) {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
                 }
                 float bestEigenCutoff = opt.eigenCutoff.size() > 1 ? gctb.tuneEigenCutoff(data, opt) : opt.eigenCutoff[0];
-                data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, bestEigenCutoff, data.gwasEffectInBlock, data.nGWASblock, opt.noscale, false);
+                data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, bestEigenCutoff, data.gwasEffectInBlock, data.nGWASblock, opt.noscale, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
                 if (opt.writeWandQ) data.outputWandQ("w_and_Q");
                 //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, bestEigenCutoff);
                 //data.constructWandQ(data.gwasEffectInBlock, data.numKeptInds);
@@ -392,7 +414,7 @@ int main(int argc, const char * argv[]) {
         }
         else if (opt.analysisType == "Print") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), true, true, opt.title);
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), true, true, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "Predict") {

@@ -104,7 +104,7 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
                         const float eigenCutoff, const bool excludeMHC,
                         const float afDiff, const float mafmin, const float mafmax, const float pValueThreshold, const float rsqThreshold,
                         const bool sampleOverlap, const bool imputeN, const bool noscale, const bool readLDMfromTxtFile, const bool imputeSummary, const unsigned includeBlock, const string &skipSnpFile, const bool buildMME){
-    data.readEigenMatrix(eigenMatrixFile, eigenCutoff);
+    data.readEigenMatrix(eigenMatrixFile, eigenCutoff, false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
     if (!includeSnpFile.empty()) data.includeSnp(includeSnpFile);
     if (!excludeSnpFile.empty()) data.excludeSnp(excludeSnpFile);
     if (includeChr) data.includeChr(includeChr);
@@ -124,7 +124,7 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
         if (imputeSummary) {
             //data.includeMatchedBlocks();
             //data.scaleGwasEffects();
-            data.readEigenMatrixBinaryFile(eigenMatrixFile, eigenCutoff);
+            data.readEigenMatrixBinaryFile(eigenMatrixFile, eigenCutoff, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             data.impG(includeBlock);
             return;
         }
@@ -135,7 +135,7 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
     /// partition ld into blocks
 //    if(!ldBlockInfoFile.empty()) data.readLDBlockInfoFile(ldBlockInfoFile);
         
-    if(!gwasSummaryFile.empty() && buildMME) data.buildMMEeigen(eigenMatrixFile, sampleOverlap, eigenCutoff, noscale);
+    if(!gwasSummaryFile.empty() && buildMME) data.buildMMEeigen(eigenMatrixFile, sampleOverlap, eigenCutoff, noscale, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
 }
 
 
@@ -1478,7 +1478,7 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
     for (unsigned i=0; i<size; ++i) {
         float cutoff = opt.eigenCutoff[i];
 
-        data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, cutoff, data.pseudoGwasEffectTrn, data.pseudoGwasNtrnBlock, false, false);
+        data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, cutoff, data.pseudoGwasEffectTrn, data.pseudoGwasNtrnBlock, false, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
         //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, cutoff);
         //data.constructWandQ(data.pseudoGwasEffectTrn, data.pseudoGwasNtrn);
         

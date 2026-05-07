@@ -11,6 +11,8 @@
 
 #include <iostream>
 #include <math.h>
+#include <algorithm>
+#include <cstdlib>
 #include "stat.hpp"
 #include "data.hpp"
 
@@ -1197,6 +1199,9 @@ public:
                           const VectorXf &snpEffects, VectorXf &rcorr);
         void computeWcorr_eigen(const vector<VectorXf> &wBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> keptLdBlockInfoVec,
                                 const VectorXf &snpEffects, vector<VectorXf> &wcorrBlocks);
+        void computeWcorr_eigen(const vector<VectorXf> &wBlocks, const vector<MatrixXf> &Qblocks, const vector<QuantizedEigenQBlock> &qQuant,
+                                const vector<QuantizedEigenUBlock> *uQuantBlocks,
+                                const vector<LDBlockInfo*> keptLdBlockInfoVec, const VectorXf &snpEffects, vector<VectorXf> &wcorrBlocks);
         void computeGhat(const MatrixXf &Z, const VectorXf &snpEffects, VectorXf &ghat);
     };
         
@@ -1275,6 +1280,7 @@ public:
         void compute_sparse(VectorXi &badSnps, VectorXf &effects, VectorXf &effectMean, const VectorXf &b, VectorXf &rcorr, const vector<SparseVector<float> > &ZPZsp, const vector<ChromInfo*> &chromInfoVec, const int iter);
         void compute_full(VectorXi &badSnps, VectorXf &effects, VectorXf &effectMean, const VectorXf &b, VectorXf &rcorr, const vector<VectorXf> &ZPZ, const VectorXi &windStart, const VectorXi &windSize, const vector<ChromInfo*> &chromInfoVec, const int iter);
         void compute_eigen(VectorXi &badSnps, VectorXf &effects, VectorXf &effectMean, const VectorXf &b, vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter);
+        void compute_eigen(VectorXi &badSnps, VectorXf &effects, VectorXf &effectMean, const VectorXf &b, vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<QuantizedEigenQBlock> &qQuant, const vector<QuantizedEigenUBlock> *uQuantBlocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter);
     };
     
 
@@ -1692,7 +1698,8 @@ public:
         void sampleFromFC_eigen(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, vector<VectorXf> &whatBlocks,
                           const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &nGWASblocks, const VectorXf &vareBlocks,
                           const float sigmaSq, const VectorXf &pis, const VectorXf &gamma, VectorXf &snpStore, const float varg,
-                          const bool hsqPercModel, DeltaPi &deltaPi);
+                          const bool hsqPercModel, DeltaPi &deltaPi, const vector<QuantizedEigenQBlock> *qQuantBlocks = nullptr,
+                          const vector<QuantizedEigenUBlock> *qUQuantBlocks = nullptr);
         
         // tempered Gibbs sampler
 //        void sampleFromTGS_eigen(const vector<vector<int> > &selectedSnps, vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, vector<VectorXf> &whatBlocks,
@@ -1757,6 +1764,87 @@ public:
     enum {gibbs, cg, mh, tgs, tgs_thin} algorithm;
     
     vector<vector<int> > highLDsnpSet;
+
+    void reportMemory(const string &where) const {
+        if (!Gadget::memReportEnabled()) return;
+
+        const size_t ptrBytes = sizeof(void*);
+        const size_t floatBytes = sizeof(float);
+        const size_t intBytes = sizeof(int);
+
+        auto vecPtrBytes = [&](const auto &v) -> size_t { return v.capacity() * ptrBytes; };
+        auto vecFloatBytes = [&](const VectorXf &v) -> size_t { return static_cast<size_t>(v.size()) * floatBytes; };
+        auto vecIntBytes = [&](const VectorXi &v) -> size_t { return static_cast<size_t>(v.size()) * intBytes; };
+
+        size_t wcorrBytes = 0;
+        for (const auto &b : wcorrBlocks) wcorrBytes += static_cast<size_t>(b.size()) * floatBytes;
+        size_t whatBytes = 0;
+        for (const auto &b : whatBlocks) whatBytes += static_cast<size_t>(b.size()) * floatBytes;
+        const size_t rcorrBytes = vecFloatBytes(rcorr);
+        const size_t membershipBytes = vecIntBytes(snpEffects.membership);
+        const size_t deltaNzIdxBytes = vecIntBytes(snpEffects.deltaNzIdx);
+        const size_t deltaNZBytes = vecFloatBytes(snpEffects.deltaNZ);
+        const size_t lambdaBytes = vecFloatBytes(snpEffects.lambdaVec);
+        const size_t uhatBytes = vecFloatBytes(snpEffects.uhatVec);
+        const size_t invGammaBytes = vecFloatBytes(snpEffects.invGammaVec);
+
+        const size_t rssNow = Gadget::currentRssBytes();
+        static size_t rssPrev = 0;
+        cout << "[mem] " << where << " RSS=" << Gadget::formatBytes(rssNow);
+        if (rssPrev > 0) {
+            const long long delta = static_cast<long long>(rssNow) - static_cast<long long>(rssPrev);
+            cout << " (delta " << (delta >= 0 ? "+" : "-") << Gadget::formatBytes(static_cast<size_t>(std::llabs(delta))) << ")";
+        }
+        cout << endl;
+        rssPrev = rssNow;
+
+        cout << "[mem] ApproxBayesR sizeof(this)=" << Gadget::formatBytes(sizeof(*this)) << endl;
+        cout << "[mem] rcorr=" << Gadget::formatBytes(rcorrBytes) << " (n=" << rcorr.size() << ")" << endl;
+        cout << "[mem] wcorrBlocks=" << Gadget::formatBytes(wcorrBytes) << " (blocks=" << wcorrBlocks.size() << ")" << endl;
+        cout << "[mem] whatBlocks=" << Gadget::formatBytes(whatBytes) << " (blocks=" << whatBlocks.size() << ")" << endl;
+
+        cout << "[mem] paramSetVec ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramSetVec))
+             << " (size=" << paramSetVec.size() << ", cap=" << paramSetVec.capacity() << ")" << endl;
+        cout << "[mem] paramVec ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramVec))
+             << " (size=" << paramVec.size() << ", cap=" << paramVec.capacity() << ")" << endl;
+        cout << "[mem] paramToPrint ptr-storage~" << Gadget::formatBytes(vecPtrBytes(paramToPrint))
+             << " (size=" << paramToPrint.size() << ", cap=" << paramToPrint.capacity() << ")" << endl;
+
+        // Selected internal buffers in SnpEffects (dynamic allocations happen there)
+        cout << "[mem] snpEffects.membership=" << Gadget::formatBytes(membershipBytes)
+             << " (n=" << snpEffects.membership.size() << ")" << endl;
+        cout << "[mem] snpEffects.deltaNzIdx=" << Gadget::formatBytes(deltaNzIdxBytes)
+             << " (n=" << snpEffects.deltaNzIdx.size() << ")" << endl;
+        cout << "[mem] snpEffects.deltaNZ=" << Gadget::formatBytes(deltaNZBytes)
+             << " (n=" << snpEffects.deltaNZ.size() << ")" << endl;
+        cout << "[mem] snpEffects.lambdaVec=" << Gadget::formatBytes(lambdaBytes)
+             << " (n=" << snpEffects.lambdaVec.size() << ")" << endl;
+        cout << "[mem] snpEffects.uhatVec=" << Gadget::formatBytes(uhatBytes)
+             << " (n=" << snpEffects.uhatVec.size() << ")" << endl;
+        cout << "[mem] snpEffects.invGammaVec=" << Gadget::formatBytes(invGammaBytes)
+             << " (n=" << snpEffects.invGammaVec.size() << ")" << endl;
+
+        vector<pair<string, size_t> > approxFootprint = {
+            {"wcorrBlocks", wcorrBytes},
+            {"rcorr", rcorrBytes},
+            {"whatBlocks", whatBytes},
+            {"snpEffects.membership", membershipBytes},
+            {"snpEffects.deltaNZ", deltaNZBytes},
+            {"snpEffects.deltaNzIdx", deltaNzIdxBytes},
+            {"snpEffects.lambdaVec", lambdaBytes},
+            {"snpEffects.uhatVec", uhatBytes},
+            {"snpEffects.invGammaVec", invGammaBytes}
+        };
+        sort(approxFootprint.begin(), approxFootprint.end(),
+             [](const pair<string, size_t> &a, const pair<string, size_t> &b) { return a.second > b.second; });
+
+        cout << "[mem] approx top consumers during model build:" << endl;
+        const size_t topN = std::min<size_t>(3, approxFootprint.size());
+        for (size_t i = 0; i < topN; ++i) {
+            cout << "[mem]   #" << (i + 1) << " " << approxFootprint[i].first
+                 << " ~ " << Gadget::formatBytes(approxFootprint[i].second) << endl;
+        }
+    }
         
     ApproxBayesR(const Data &data, const bool lowRank, const float varGenotypic, const float varResidual, const VectorXf pis, const VectorXf &piPar, const VectorXf gamma, const bool estimatePi, const bool noscale, const bool hsqPercModel, const bool robustMode, const string &alg, const bool message = true):
     BayesR(data, varGenotypic, varResidual, 0.0, pis, piPar, gamma, estimatePi, noscale, hsqPercModel, alg, false)
@@ -1776,6 +1864,7 @@ public:
     , robustMode(robustMode)
     , lowRankModel(lowRank)
     {
+        reportMemory("ApproxBayesR ctor entry (after member init)");
 
         if (alg == "cg") algorithm = cg;
         else if (alg == "MH") algorithm = mh;
@@ -1798,6 +1887,8 @@ public:
             paramSetVec.push_back(&vareBlk);
             paramToPrint.push_back(&nBadSnps);
         }
+
+        reportMemory("ApproxBayesR after param vec wiring");
                         
         if (message) {
             cout << "\nSBayesR" << endl;
@@ -1821,7 +1912,7 @@ public:
     void sampleUnknowns(const unsigned iter);
     void updateRHSfull(VectorXf &rcorr, const vector<VectorXf> &ZPZ, const VectorXi &windStart, const VectorXi &windSize, const vector<ChromInfo*> &chromInfoVec, const VectorXf &snpEffects);
    void updateRHSsparse(VectorXf &rcorr, const vector<SparseVector<float> > &ZPZ, const VectorXi &windStart, const VectorXi &windSize, const vector<ChromInfo*> &chromInfoVec, const VectorXf &snpEffects);
-    void updateRHSlowRankModel(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &snpEffects);
+    void updateRHSlowRankModel(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &snpEffects, const vector<QuantizedEigenQBlock> *qQuantBlocks = nullptr, const vector<QuantizedEigenUBlock> *qUQuantBlocks = nullptr);
 };
 
 // -----------------------------------------------------------------------------------------------
