@@ -6,12 +6,59 @@
 //  Copyright © 2016 Jian Zeng. All rights reserved.
 //
 
+#include <cmath>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include "gctb.hpp"
+#include "quantizer.hpp"
 #include "xci.hpp"
 #include "vgmaf.hpp"
 
 using namespace std;
+
+#ifdef __linux__
+inline int getMemPeakKB() {
+    ifstream file("/proc/self/status");
+    if (!file.is_open()) return -1;
+
+    string line;
+    while (getline(file, line)) {
+        if (line.rfind("VmHWM:", 0) == 0) {
+            auto pos = line.find_first_of("0123456789");
+            if (pos == string::npos) return -1;
+
+            istringstream iss(line.substr(pos));
+            int value = 0;
+            iss >> value;
+            return value;
+        }
+    }
+    return -1;
+}
+
+inline int getVMPeakKB() {
+    ifstream file("/proc/self/status");
+    if (!file.is_open()) return -1;
+
+    string line;
+    while (getline(file, line)) {
+        if (line.rfind("VmPeak:", 0) == 0) {
+            auto pos = line.find_first_of("0123456789");
+            if (pos == string::npos) return -1;
+
+            istringstream iss(line.substr(pos));
+            int value = 0;
+            iss >> value;
+            return value;
+        }
+    }
+    return -1;
+}
+#endif
 
 
 int main(int argc, const char * argv[]) {
@@ -33,10 +80,64 @@ int main(int argc, const char * argv[]) {
         exit(1);
     }
     
+    const string earlyStopToken = "__EARLY_STOP_SBayesR__";
+    const bool sbayesrEarlyStop = []() {
+        const char *v = std::getenv("GCTB_SBAYESR_EARLY_STOP");
+        if (!v) return false;
+        string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
+    const bool memTraceSteps = []() {
+        const char *v = std::getenv("GCTB_MEM_TRACE_STEPS");
+        if (!v) return false;
+        string s(v);
+        for (auto &c : s) c = static_cast<char>(std::tolower(c));
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }();
+    size_t prevStepRss = 0;
+    const auto traceMemStep = [&](const string &label) {
+        if (!(Gadget::memReportEnabled() || memTraceSteps)) return;
+        size_t rss = Gadget::currentRssBytes();
+        cout << "[mem-step] " << label << " RSS=" << Gadget::formatBytes(rss);
+        if (prevStepRss > 0) {
+            long long delta = static_cast<long long>(rss) - static_cast<long long>(prevStepRss);
+            cout << " (delta " << (delta >= 0 ? "+" : "-")
+                 << Gadget::formatBytes(static_cast<size_t>(std::llabs(delta))) << ")";
+        }
+        cout << endl;
+        prevStepRss = rss;
+    };
+    
     try {
         
         Options opt;
         opt.inputOptions(argc, argv);
+
+        if (opt.analysisType == "QuantizeEigen") {
+            eigen_quantize::QuantizationOptions qopt;
+            qopt.bits = opt.quantEigenBits;
+            qopt.entropy_coding = opt.quantEigenEntropy;
+            qopt.q_per_snp_column = opt.quantEigenQPerSnp;
+            try {
+                const auto summary = eigen_quantize::quantize_directory(opt.quantEigenInputDir, opt.quantEigenOutputDir, qopt);
+                cout << "Completed " << summary.num_files << " files with q" << qopt.bits;
+                if (qopt.q_per_snp_column) {
+                    cout << " (Q per SNP col)";
+                }
+                if (qopt.entropy_coding) {
+                    cout << " (entropy-coded)";
+                }
+                cout << ".\nTotal bytes: " << summary.total_original_bytes << " -> " << summary.total_quantized_bytes << endl;
+            } catch (const std::exception& error) {
+                cerr << "Quantize eigen error: " << error.what() << endl;
+                return 1;
+            }
+            timer.getTime();
+            cout << "\nAnalysis finished: " << timer.getDate();
+            cout << "Computational time: " << timer.format(timer.getElapse()) << endl;
+            return 0;
+        }
         
         if (opt.seed) Stat::seedEngine(opt.seed);
         else          Stat::seedEngine(011415);  // fix the random seed if not given due to the use of MPI
@@ -194,15 +295,15 @@ int main(int argc, const char * argv[]) {
         }
         else if (opt.analysisType == "Convert") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff());
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
                 data.inputMatchedSnpResults(opt.snpResFile);
-                data.convert(opt.eigenMatrixFile, opt.includeSnpFile, opt.title);
+                data.convert(opt.eigenMatrixFile, opt.includeSnpFile, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "GetLD") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff());
-                data.getLDfromEigenMatrix(opt.eigenMatrixFile, opt.rsqThreshold, opt.title);
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+                data.getLDfromEigenMatrix(opt.eigenMatrixFile, opt.rsqThreshold, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "GetLDfriends") {
@@ -212,10 +313,13 @@ int main(int argc, const char * argv[]) {
             data.getLDfriends(opt.pairwiseLDfile, opt.rsqThreshold, opt.title);
         }
         else if (opt.analysisType == "SBayes" || opt.analysisType == "GWFM") {
+            traceMemStep("enter SBayes/GWFM analysis block");
             if (!opt.ldmatrixFile.empty()) {
                 gctb.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.gwasSummaryFile, opt.ldmatrixFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.genMapN, opt.annotationFile, opt.transpose, opt.continuousAnnoFile, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.windowFile, opt.multiLDmat, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.binSnp, opt.readLdmTxt);
+                traceMemStep("after inputSnpInfo from ldmatrix");
             } else if (!opt.eigenMatrixFile.empty()) {  // low-rank model
                 data.mergeLdmInfo("block", opt.eigenMatrixFile, false); // if each block has its own .info file, then merge them
+                traceMemStep("after mergeLdmInfo");
                 gctb.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
                                   opt.gwasSummaryFile, opt.eigenMatrixFile, opt.ldBlockInfoFile,
                                   opt.includeChr, opt.excludeAmbiguousSNP,
@@ -224,16 +328,25 @@ int main(int argc, const char * argv[]) {
                                   opt.eigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, opt.includeBlock, opt.skipSnpFile);
+                traceMemStep("after inputSnpInfo from eigen");
+               if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
+                    cout << "\nStopping before eigen-cutoff tuning/model selection/build and MCMC start for SBayesR as requested." << endl;
+                    throw earlyStopToken;
+                }
                 if (opt.analysisType == "GWFM") {
                     data.inputPairwiseLD(opt.eigenMatrixFile+"/"+opt.pairwiseLDfile, 0.95);  // for TGS sampling
+                    traceMemStep("after inputPairwiseLD");
                 }
                 float bestEigenCutoff = opt.eigenCutoff.size() > 1 ? gctb.tuneEigenCutoff(data, opt) : opt.eigenCutoff[0];
-                data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, bestEigenCutoff, data.gwasEffectInBlock, data.nGWASblock, opt.noscale, false);
+                traceMemStep("after tuneEigenCutoff");
+                data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, bestEigenCutoff, data.gwasEffectInBlock, data.nGWASblock, opt.noscale, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+                traceMemStep("after readEigenMatrixBinaryFileAndMakeWandQ");
                 if (opt.writeWandQ) data.outputWandQ("w_and_Q");
                 //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, bestEigenCutoff);
                 //data.constructWandQ(data.gwasEffectInBlock, data.numKeptInds);
             } else {
                 gctb.inputSnpInfo(data, opt.bedFile, opt.gwasSummaryFile, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale);
+                traceMemStep("after inputSnpInfo from bed");
             }
             
             data.label = opt.title;
@@ -241,20 +354,36 @@ int main(int argc, const char * argv[]) {
 //                vector<McmcSamples*> mcmcSampleVec = gctb.multi_chain_mcmc(data, opt.bayesType, opt.windowWidth, opt.heritability, opt.propVarRandom, opt.pi, opt.piAlpha, opt.piBeta, opt.estimatePi, opt.pis, opt.gamma, opt.phi, opt.kappa, opt.algorithm, opt.snpFittedPerWindow, opt.varS, opt.S, opt.overdispersion, opt.estimatePS, opt.icrsq, opt.spouseCorrelation, opt.diagnosticMode, opt.robustMode, opt.numChains, opt.chainLength, opt.burnin, opt.thin, opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 //                if (opt.outputResults) gctb.outputResults(data, mcmcSampleVec, opt.bayesType, opt.noscale, opt.title);
 //            } else {
-                
+             
+            if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
+                cout << "\nStopping before model selection/build and MCMC start for SBayesR as requested." << endl;
+                throw earlyStopToken;
+            }
             
             if (opt.nDistAuto) gctb.findBestFitModel(data, opt);
+            traceMemStep("after findBestFitModel");
             
             Model *model = gctb.buildModel(data, opt, opt.bedFile, opt.gwasSummaryFile, opt.bayesType, opt.windowWidth,
                                            opt.heritability, opt.propVarRandom, opt.pi, opt.piAlpha, opt.piBeta, opt.estimatePi, opt.noscale, opt.pis, opt.piPar, opt.gamma, opt.estimateSigmaSq, opt.phi, opt.kappa,
                                            opt.algorithm, opt.snpFittedPerWindow, opt.varS, opt.S, opt.overdispersion, opt.estimatePS, opt.icrsq, opt.spouseCorrelation, opt.diagnosticMode, opt.hsqPercModel, opt.perSnpGV, opt.robustMode, opt.nDistAuto, opt.estimateRsqEnrich);
+            traceMemStep("after buildModel");
             
 //            vector<McmcSamples*> mcmcSampleVec = gctb.runMcmc(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin,
 //                                                              opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
 
             MCMC *mcmc = new MCMC();
+            traceMemStep("after MCMC object creation");
+            if (sbayesrEarlyStop && opt.analysisType == "SBayes" && opt.bayesType == "R") {
+    cout << "\nStopping after MCMC object creation and before MCMC run for SBayesR as requested." << endl;
+    delete mcmc;
+    delete model;
+    mcmc = nullptr;
+    model = nullptr;
+    throw earlyStopToken;
+}
             vector<McmcSamples*> mcmcSampleVec = mcmc->run(*model, opt.numChains, opt.chainLength, opt.burnin, opt.thin, true,
                                                            opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
+            traceMemStep("after mcmc->run");
 
             if (mcmc->action == mcmc->restart_and_use_robust_model) {
                 cout << "\nRestarting MCMC with a more robust parameterisation for SBayes" << opt.bayesType << " ..." << endl;
@@ -392,7 +521,7 @@ int main(int argc, const char * argv[]) {
         }
         else if (opt.analysisType == "Print") {
             if (!opt.eigenMatrixFile.empty()) {
-                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), true, true, opt.title);
+                data.readEigenMatrix(opt.eigenMatrixFile, opt.eigenCutoff.maxCoeff(), true, true, opt.title, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             }
         }
         else if (opt.analysisType == "Predict") {
@@ -485,7 +614,9 @@ int main(int argc, const char * argv[]) {
         }
     }
     catch (const std::string &err_msg) {
-        cerr << "\n" << err_msg << endl;
+        if (err_msg != earlyStopToken) {
+            cerr << "\n" << err_msg << endl;
+        }
     }
     catch (const char *err_msg) {
         cerr << "\n" << err_msg << endl;
@@ -495,6 +626,16 @@ int main(int argc, const char * argv[]) {
     
     cout << "\nAnalysis finished: " << timer.getDate();
     cout << "Computational time: "  << timer.format(timer.getElapse()) << endl;
+#ifdef __linux__
+    const int memPeakKB = getMemPeakKB();
+    const int vmPeakKB = getVMPeakKB();
+    if (memPeakKB >= 0 && vmPeakKB >= 0) {
+        float vmem = roundf(1000.0f * vmPeakKB / 1024.0f / 1024.0f) / 1000.0f;
+        float mem = roundf(1000.0f * memPeakKB / 1024.0f / 1024.0f) / 1000.0f;
+        cout << fixed << setprecision(3)
+             << "Peak memory: " << mem << " GB; Virtual memory: " << vmem << " GB." << endl;
+    }
+#endif
 
     return 0;
 }

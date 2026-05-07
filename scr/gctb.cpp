@@ -104,7 +104,7 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
                         const float eigenCutoff, const bool excludeMHC,
                         const float afDiff, const float mafmin, const float mafmax, const float pValueThreshold, const float rsqThreshold,
                         const bool sampleOverlap, const bool imputeN, const bool noscale, const bool readLDMfromTxtFile, const bool imputeSummary, const unsigned includeBlock, const string &skipSnpFile, const bool buildMME){
-    data.readEigenMatrix(eigenMatrixFile, eigenCutoff);
+    data.readEigenMatrix(eigenMatrixFile, eigenCutoff, false, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
     if (!includeSnpFile.empty()) data.includeSnp(includeSnpFile);
     if (!excludeSnpFile.empty()) data.excludeSnp(excludeSnpFile);
     if (includeChr) data.includeChr(includeChr);
@@ -124,7 +124,7 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
         if (imputeSummary) {
             //data.includeMatchedBlocks();
             //data.scaleGwasEffects();
-            data.readEigenMatrixBinaryFile(eigenMatrixFile, eigenCutoff);
+            data.readEigenMatrixBinaryFile(eigenMatrixFile, eigenCutoff, false, ".", opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
             data.impG(includeBlock);
             return;
         }
@@ -135,7 +135,9 @@ void GCTB::inputSnpInfo(Data &data, const string &includeSnpFile, const string &
     /// partition ld into blocks
 //    if(!ldBlockInfoFile.empty()) data.readLDBlockInfoFile(ldBlockInfoFile);
         
-    if(!gwasSummaryFile.empty() && buildMME) data.buildMMEeigen(eigenMatrixFile, sampleOverlap, eigenCutoff, noscale);
+    if(!gwasSummaryFile.empty() && buildMME) {
+        data.buildMMEeigen(eigenMatrixFile, sampleOverlap, eigenCutoff, noscale, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+    }
 }
 
 
@@ -1474,18 +1476,36 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
     VectorXf rel(size);
     
     cout << boost::format("%10s %25s %20s\n") % "Cutoff" % "Prediction accuracy (r)" % "Relative accuracy";
+    size_t prevTuneRss = 0;
+    const auto traceTuneMem = [&](const string &label, const float cutoffVal) {
+        if (!Gadget::memReportEnabled()) return;
+        const size_t rss = Gadget::currentRssBytes();
+        cout << "[mem-tune] cutoff=" << cutoffVal << " " << label
+             << " RSS=" << Gadget::formatBytes(rss);
+        if (prevTuneRss > 0) {
+            const long long delta = static_cast<long long>(rss) - static_cast<long long>(prevTuneRss);
+            cout << " (delta " << (delta >= 0 ? "+" : "-")
+                 << Gadget::formatBytes(static_cast<size_t>(std::llabs(delta))) << ")";
+        }
+        cout << endl;
+        prevTuneRss = rss;
+    };
     
     for (unsigned i=0; i<size; ++i) {
         float cutoff = opt.eigenCutoff[i];
+        traceTuneMem("before readEigenMatrixBinaryFileAndMakeWandQ", cutoff);
 
-        data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, cutoff, data.pseudoGwasEffectTrn, data.pseudoGwasNtrnBlock, false, false);
+        data.readEigenMatrixBinaryFileAndMakeWandQ(opt.eigenMatrixFile, cutoff, data.pseudoGwasEffectTrn, data.pseudoGwasNtrnBlock, false, false, opt.eigenMatrixQuantBits, opt.eigenMatrixQ8Entropy, opt.eigenMatrixQSnpColumn, opt.eigenMatrixUTranspose);
+        traceTuneMem("after readEigenMatrixBinaryFileAndMakeWandQ", cutoff);
         //data.readEigenMatrixBinaryFile(opt.eigenMatrixFile, cutoff);
         //data.constructWandQ(data.pseudoGwasEffectTrn, data.pseudoGwasNtrn);
         
         data.initVariances(opt.heritability, opt.propVarRandom);
+        traceTuneMem("after initVariances", cutoff);
         bool nDistAuto = false;
         bool print = false;
         Model *modeli = new ApproxBayesR(data, data.lowRankModel, data.varGenotypic, data.varResidual, opt.pis, opt.piPar, opt.gamma, opt.estimatePi, opt.noscale, opt.hsqPercModel, opt.robustMode, opt.algorithm, print);
+        traceTuneMem("after ApproxBayesR model allocation", cutoff);
         
         vector<McmcSamples*> mcmcSampleVeci;
         MCMC mcmc;
@@ -1494,6 +1514,7 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         unsigned burnin = 100;
         unsigned thin = 1;
         mcmcSampleVeci = mcmc.run(*modeli, 1, chainLength, burnin, thin, print, opt.outputFreq, opt.title, print, print);
+        traceTuneMem("after tuning mcmc.run", cutoff);
 
         VectorXf betaMean;
         for (unsigned i=0; i<mcmcSampleVeci.size(); ++i) {
@@ -1508,6 +1529,14 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
         rel[i] = cor[i]/cor[0];
         
         cout << boost::format("%10s %25s %20s\n") % cutoff % cor[i] % rel[i];
+
+        // Free per-cutoff temporary allocations to avoid RSS growth during tuning.
+        for (auto *samples : mcmcSampleVeci) {
+            delete samples;
+        }
+        mcmcSampleVeci.clear();
+        delete modeli;
+        traceTuneMem("after cleanup per-cutoff temporaries", cutoff);
 
     }
     
@@ -1537,5 +1566,4 @@ float GCTB::tuneEigenCutoff(Data &data, const Options &opt){
     
     return bestCutoff;
 }
-
 

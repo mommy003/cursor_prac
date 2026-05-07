@@ -7,6 +7,7 @@
 //
 
 #include "model.hpp"
+#include "quantized_eigen_q.hpp"
 
 
 void BayesC::FixedEffects::sampleFromFC(VectorXf &ycorr, const MatrixXf &X,
@@ -2235,6 +2236,133 @@ void ApproxBayesC::Rounding::computeWcorr_eigen(const vector<VectorXf> &wBlocks,
     value = res.sum();
 }
 
+void ApproxBayesC::Rounding::computeWcorr_eigen(const vector<VectorXf> &wBlocks, const vector<MatrixXf> &Qblocks,
+                                                const vector<QuantizedEigenQBlock> &qQuant,
+                                                const vector<QuantizedEigenUBlock> *uQuantBlocks,
+                                                const vector<LDBlockInfo*> keptLdBlockInfoVec,
+                                                const VectorXf &snpEffects, vector<VectorXf> &wcorrBlocks){
+    long nBlocks = keptLdBlockInfoVec.size();
+    VectorXf res(nBlocks);
+
+#pragma omp parallel for
+    for(unsigned blk = 0; blk < nBlocks; blk++){
+        Ref<VectorXf> wcorr = wcorrBlocks[blk];
+        VectorXf wcorrOld = wcorr;
+        wcorr = wBlocks[blk];
+
+        LDBlockInfo *blockInfo = keptLdBlockInfoVec[blk];
+        unsigned blockStart = blockInfo->startSnpIdx;
+        unsigned blockEnd   = blockInfo->endSnpIdx;
+
+        const bool useQuantUBlk = uQuantBlocks && blk < uQuantBlocks->size() && (*uQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+        if (useQuantUBlk) {
+            const QuantizedEigenUBlock &ub = (*uQuantBlocks)[blk];
+            float *wp = wcorr.data();
+            const int kdim = ub.k;
+            const float *sld = ub.sqrtLambdaScaleDequant.data();
+            switch (ub.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            wp[j] += c * sld[j] * static_cast<float>(qq);
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        } else if (blk < qQuant.size() && qQuant[blk].m > 0 && Qblocks[blk].rows() == 0) {
+            const QuantizedEigenQBlock &qb = qQuant[blk];
+            float *wp = wcorr.data();
+            const int kdim = qb.k;
+            switch (qb.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(qb.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(qb.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            wp[j] += c * static_cast<float>(qq);
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        } else {
+            Ref<const MatrixXf> Q = Qblocks[blk];
+            for(unsigned i = blockStart; i <= blockEnd; i++){
+                Ref<const VectorXf> Qi = Q.col(i - blockStart);
+                if (snpEffects[i]) wcorr -= Qi*snpEffects[i];
+            }
+        }
+        res[blk] = sqrt(Gadget::calcVariance(wcorrOld-wcorr));
+    }
+    value = res.sum();
+}
+
 void ApproxBayesC::Rounding::computeGhat(const MatrixXf &Z, const VectorXf &snpEffects, VectorXf &ghat){
     VectorXf ghatOld = ghat;
     ghat.setZero(ghat.size());
@@ -2591,6 +2719,131 @@ void ApproxBayesC::NumBadSnps::compute_eigen(VectorXi &badSnps, VectorXf &effect
                 //cout << "DEL:" << "\t" << betaVal << "\t" << b[idx] << "\t" << rate_b << "\t" << compare_rate << std::endl;
                 Ref<const VectorXf> Qi = Q.col(i - blockStart);
                 wcorr = wcorr + Qi * effects[i];
+                effects[i] = 0.0;
+                effectMean[i] = 0.0;
+                badSnps[i] = 1;
+                badSnpIdx.push_back(i);
+                badSnpName.push_back(snpNames[i]);
+                if (writeTxt) out << i+1 << "\t" << snpNames[i] << endl;
+                ++value;
+            }
+        }
+    }
+}
+
+void ApproxBayesC::NumBadSnps::compute_eigen(VectorXi &badSnps, VectorXf &effects, VectorXf &effectMean, const VectorXf &b, vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<QuantizedEigenQBlock> &qQuant, const vector<QuantizedEigenUBlock> *uQuantBlocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter) {
+    value = 0;
+
+    float rate_thresh1 = 0, rate_thresh2 = 0;
+    if(iter < 300){
+        rate_thresh1 = 4.0;
+        rate_thresh2 = 2.0;
+    }else if(iter < 600){
+        rate_thresh1 = 3.0;
+        rate_thresh2 = 1.5;
+    }else if(iter < 900){
+        rate_thresh1 = 2.0;
+        rate_thresh2 = 1.3;
+    }else{
+        rate_thresh1 = 1.5;
+        rate_thresh2 = 1.1;
+    }
+
+    unsigned nBlocks = Qblocks.size();
+    for(unsigned blk = 0; blk < nBlocks; blk++){
+        Ref<VectorXf> wcorr = wcorrBlocks[blk];
+
+        LDBlockInfo *blockInfo = keptLdBlockInfoVec[blk];
+
+        unsigned blockStart = blockInfo->startSnpIdx;
+        unsigned blockEnd   = blockInfo->endSnpIdx;
+
+        const bool useQuantUBlk = uQuantBlocks && blk < uQuantBlocks->size() && (*uQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+        const bool useQuantBlk = !useQuantUBlk && blk < qQuant.size() && qQuant[blk].m > 0 && Qblocks[blk].rows() == 0;
+
+        for(unsigned i = blockStart; i <= blockEnd; i++){
+            if (badSnps[i]) {
+                continue;
+            }
+
+            float rate_b = abs((effectMean[i] - b[i])/b[i]);
+            bool sameSign = (b[i] >= 0.0f) == (effectMean[i] >= 0.0f);
+            float compare_rate = sameSign ? rate_thresh1 : rate_thresh2;
+
+            if(abs(effectMean[i]) > betaThresh && rate_b > compare_rate){
+                if (useQuantUBlk) {
+                    const QuantizedEigenUBlock &ub = (*uQuantBlocks)[blk];
+                    float *wp = wcorr.data();
+                    const int col = (int)(i - blockStart);
+                    const int kdim = ub.k;
+                    const float c = effects[i];
+                    const float *sld = ub.sqrtLambdaScaleDequant.data();
+                    switch (ub.bits) {
+                        case 8: {
+                            const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+                            for (int j = 0; j < kdim; ++j) {
+                                wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                            }
+                            break;
+                        }
+                        case 16: {
+                            const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+                            for (int j = 0; j < kdim; ++j) {
+                                wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                            }
+                            break;
+                        }
+                        case 4: {
+                            const int packed_k = (kdim + 1) / 2;
+                            for (int j = 0; j < kdim; ++j) {
+                                const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                wp[j] += c * sld[j] * static_cast<float>(qq);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                } else if (useQuantBlk) {
+                    const QuantizedEigenQBlock &qb = qQuant[blk];
+                    float *wp = wcorr.data();
+                    const int col = (int)(i - blockStart);
+                    const int kdim = qb.k;
+                    const float scale = qb.snpDequantScale[col];
+                    const float c = scale * effects[i];
+                    switch (qb.bits) {
+                        case 8: {
+                            const int8_t *q = reinterpret_cast<const int8_t*>(qb.raw.data());
+                            for (int j = 0; j < kdim; ++j) {
+                                wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                            }
+                            break;
+                        }
+                        case 16: {
+                            const int16_t *q = reinterpret_cast<const int16_t*>(qb.raw.data());
+                            for (int j = 0; j < kdim; ++j) {
+                                wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                            }
+                            break;
+                        }
+                        case 4: {
+                            const int packed_k = (kdim + 1) / 2;
+                            for (int j = 0; j < kdim; ++j) {
+                                const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                wp[j] += c * static_cast<float>(qq);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                } else {
+                    Ref<const MatrixXf> Q = Qblocks[blk];
+                    Ref<const VectorXf> Qi = Q.col(i - blockStart);
+                    wcorr = wcorr + Qi * effects[i];
+                }
                 effects[i] = 0.0;
                 effectMean[i] = 0.0;
                 badSnps[i] = 1;
@@ -4394,7 +4647,8 @@ void ApproxBayesR::SnpEffects::sampleFromFC_full(VectorXf &rcorr, const vector<V
 void ApproxBayesR::SnpEffects::sampleFromFC_eigen(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, vector<VectorXf> &whatBlocks,
                                             const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &nGWASblocks, const VectorXf &vareBlocks,
                                             const float sigmaSq, const VectorXf &pis, const VectorXf &gamma, VectorXf &snpStore, const float varg,
-                                            const bool hsqPercModel, DeltaPi &deltaPi) {
+                                            const bool hsqPercModel, DeltaPi &deltaPi, const vector<QuantizedEigenQBlock> *qQuantBlocks,
+                                            const vector<QuantizedEigenUBlock> *qUQuantBlocks) {
     // -----------------------------------------
     // This method uses low-rank model with eigen-decomposition of LD matrices
     // -----------------------------------------
@@ -4457,8 +4711,6 @@ void ApproxBayesR::SnpEffects::sampleFromFC_eigen(vector<VectorXf> &wcorrBlocks,
     
     #pragma omp parallel for schedule(dynamic)
     for(unsigned blk = 0; blk < nBlocks; blk++){
-        //printf("  Inner: Thread %d of %d\n", omp_get_thread_num(), omp_get_num_threads());
-        Ref<const MatrixXf> Q = Qblocks[blk];
         Ref<VectorXf> wcorr = wcorrBlocks[blk];
         Ref<VectorXf> what = whatBlocks[blk];
 
@@ -4475,48 +4727,416 @@ void ApproxBayesR::SnpEffects::sampleFromFC_eigen(vector<VectorXf> &wcorrBlocks,
         ArrayXf invLhs = 1.0/(invVareDn + invWtdSigmaSq);
         ArrayXf logInvLhsMsigma = invLhs.log() - logWtdSigmaSq;
         
-        // shuffling the SNP index for faster convergence
         vector<int> snpIndexVec = Gadget::shuffle_index(blockStart, blockEnd);
 
-        //for(unsigned i = blockStart; i <= blockEnd; i++){
-        for (unsigned t = 0; t < blockSize; t++) {
-            unsigned i = snpIndexVec[t];
-            if (badSnps[i]) {
-                valuesPtr[i] = 0.0;
-                continue;
+        const bool useQuantUBlk = qUQuantBlocks && blk < qUQuantBlocks->size() && (*qUQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+        const bool useQuantBlk = !useQuantUBlk && qQuantBlocks && blk < qQuantBlocks->size() && (*qQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+
+        if (useQuantUBlk) {
+            const QuantizedEigenUBlock &ub = (*qUQuantBlocks)[blk];
+            float *wcorrPtr = wcorr.data();
+            float *whatPtr = what.data();
+            const int kdim = ub.k;
+            const float *sld = ub.sqrtLambdaScaleDequant.data();
+            vector<float> tw(kdim);
+            switch (ub.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        for (int j = 0; j < kdim; ++j) tw[j] = wcorrPtr[j] * sld[j];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) sumq += tw[j] * static_cast<float>(q[col * kdim + j]);
+                        float rhs = (sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float d1 = oldSample - valuesPtr[i];
+                            const float d2 = valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const float qf = static_cast<float>(q[col * kdim + j]);
+                                const float sl = sld[j];
+                                wcorrPtr[j] += d1 * sl * qf;
+                                whatPtr[j] += d2 * sl * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    wcorrPtr[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        for (int j = 0; j < kdim; ++j) tw[j] = wcorrPtr[j] * sld[j];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) sumq += tw[j] * static_cast<float>(q[col * kdim + j]);
+                        float rhs = (sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float d1 = oldSample - valuesPtr[i];
+                            const float d2 = valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const float qf = static_cast<float>(q[col * kdim + j]);
+                                const float sl = sld[j];
+                                wcorrPtr[j] += d1 * sl * qf;
+                                whatPtr[j] += d2 * sl * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    wcorrPtr[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        for (int j = 0; j < kdim; ++j) tw[j] = wcorrPtr[j] * sld[j];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            sumq += tw[j] * static_cast<float>(qq);
+                        }
+                        float rhs = (sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float d1 = oldSample - valuesPtr[i];
+                            const float d2 = valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                const float qf = static_cast<float>(qq);
+                                const float sl = sld[j];
+                                wcorrPtr[j] += d1 * sl * qf;
+                                whatPtr[j] += d2 * sl * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                                    const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                    wcorrPtr[j] += c * sld[j] * static_cast<float>(qq);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
             }
-            float oldSample = valuesPtr[i];
-            Ref<const VectorXf> Qi = Q.col(i - blockStart);
-            float rhs = (Qi.dot(wcorr) + oldSample)*invVareDn;
-            ArrayXf uhat = invLhs * rhs;
-            ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
-            logDelta[0] = logPis[0];
-            
-            ArrayXf probDelta(ndist);
-            for (unsigned k=0; k<ndist; ++k) {
-                probDelta[k] = 1.0f/(logDelta-logDelta[k]).exp().sum();
-                deltaPi[k]->values[i] = probDelta[k];
+        } else if (useQuantBlk) {
+            const QuantizedEigenQBlock &qb = (*qQuantBlocks)[blk];
+            float *wcorrPtr = wcorr.data();
+            float *whatPtr = what.data();
+            const int kdim = qb.k;
+            switch (qb.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(qb.raw.data());
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) {
+                            sumq += static_cast<float>(q[col * kdim + j]) * wcorrPtr[j];
+                        }
+                        float rhs = (scale * sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float c1 = scale * (oldSample - valuesPtr[i]);
+                            const float c2 = scale * valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const float qf = static_cast<float>(q[col * kdim + j]);
+                                wcorrPtr[j] += c1 * qf;
+                                whatPtr[j] += c2 * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = scale * oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    wcorrPtr[j] += c * static_cast<float>(q[col * kdim + j]);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(qb.raw.data());
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) {
+                            sumq += static_cast<float>(q[col * kdim + j]) * wcorrPtr[j];
+                        }
+                        float rhs = (scale * sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float c1 = scale * (oldSample - valuesPtr[i]);
+                            const float c2 = scale * valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const float qf = static_cast<float>(q[col * kdim + j]);
+                                wcorrPtr[j] += c1 * qf;
+                                whatPtr[j] += c2 * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = scale * oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    wcorrPtr[j] += c * static_cast<float>(q[col * kdim + j]);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned t = 0; t < blockSize; t++) {
+                        unsigned i = snpIndexVec[t];
+                        if (badSnps[i]) {
+                            valuesPtr[i] = 0.0;
+                            continue;
+                        }
+                        float oldSample = valuesPtr[i];
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        float sumq = 0.f;
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            sumq += static_cast<float>(qq) * wcorrPtr[j];
+                        }
+                        float rhs = (scale * sumq + oldSample) * invVareDn;
+                        ArrayXf uhat = invLhs * rhs;
+                        ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                        logDelta[0] = logPis[0];
+
+                        ArrayXf probDelta(ndist);
+                        for (unsigned kk = 0; kk < ndist; ++kk) {
+                            probDelta[kk] = 1.0f/(logDelta-logDelta[kk]).exp().sum();
+                            deltaPi[kk]->values[i] = probDelta[kk];
+                        }
+                        pipPtr[i] = 1.0f - probDelta[0];
+
+                        unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                        membership[i] = delta;
+                        snpsetBlocks[blk][delta].push_back(i);
+
+                        if (delta) {
+                            valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                            const float c1 = scale * (oldSample - valuesPtr[i]);
+                            const float c2 = scale * valuesPtr[i];
+                            for (int j = 0; j < kdim; ++j) {
+                                const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                                const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                const float qf = static_cast<float>(qq);
+                                wcorrPtr[j] += c1 * qf;
+                                whatPtr[j] += c2 * qf;
+                            }
+                            ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                            wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                            ++nnz[blk];
+                        }
+                        else {
+                            if (oldSample) {
+                                const float c = scale * oldSample;
+                                for (int j = 0; j < kdim; ++j) {
+                                    const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                                    const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                                    wcorrPtr[j] += c * static_cast<float>(qq);
+                                }
+                            }
+                            valuesPtr[i] = 0.0;
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
             }
-            pipPtr[i] = 1.0f - probDelta[0];
-                        
-//            #pragma omp critical
-//            {
-            unsigned delta = bernoulli.sample(probDelta, urnd[i]);
-            membership[i] = delta;
-            snpsetBlocks[blk][delta].push_back(i);
-//            }
-            
-            if (delta) {
-                valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
-                wcorr += Qi*(oldSample - valuesPtr[i]);
-                what  += Qi* valuesPtr[i];
-                ssq[blk] += valuesPtr[i] * valuesPtr[i];
-                wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
-                ++nnz[blk];
-            }
-            else {
-                if (oldSample) wcorr += Qi * oldSample;
-                valuesPtr[i] = 0.0;
+        } else {
+            Ref<const MatrixXf> Q = Qblocks[blk];
+            for (unsigned t = 0; t < blockSize; t++) {
+                unsigned i = snpIndexVec[t];
+                if (badSnps[i]) {
+                    valuesPtr[i] = 0.0;
+                    continue;
+                }
+                float oldSample = valuesPtr[i];
+                Ref<const VectorXf> Qi = Q.col(i - blockStart);
+                float rhs = (Qi.dot(wcorr) + oldSample)*invVareDn;
+                ArrayXf uhat = invLhs * rhs;
+                ArrayXf logDelta = 0.5*(logInvLhsMsigma + uhat*rhs) + logPis;
+                logDelta[0] = logPis[0];
+
+                ArrayXf probDelta(ndist);
+                for (unsigned k=0; k<ndist; ++k) {
+                    probDelta[k] = 1.0f/(logDelta-logDelta[k]).exp().sum();
+                    deltaPi[k]->values[i] = probDelta[k];
+                }
+                pipPtr[i] = 1.0f - probDelta[0];
+
+                unsigned delta = bernoulli.sample(probDelta, urnd[i]);
+                membership[i] = delta;
+                snpsetBlocks[blk][delta].push_back(i);
+
+                if (delta) {
+                    valuesPtr[i] = uhat[delta] + nrnd[i]*sqrtf(invLhs[delta]);
+                    wcorr += Qi*(oldSample - valuesPtr[i]);
+                    what  += Qi* valuesPtr[i];
+                    ssq[blk] += valuesPtr[i] * valuesPtr[i];
+                    wtdssq[blk] += (valuesPtr[i] * valuesPtr[i]) / gamma[delta];
+                    ++nnz[blk];
+                }
+                else {
+                    if (oldSample) wcorr += Qi * oldSample;
+                    valuesPtr[i] = 0.0;
+                }
             }
         }
 
@@ -4901,23 +5521,123 @@ void ApproxBayesR::updateRHSsparse(VectorXf &rcorr, const vector<SparseVector<fl
     }
 }
 
-void ApproxBayesR::updateRHSlowRankModel(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &snpEffects){
+void ApproxBayesR::updateRHSlowRankModel(vector<VectorXf> &wcorrBlocks, const vector<MatrixXf> &Qblocks, const vector<LDBlockInfo*> &keptLdBlockInfoVec, const VectorXf &snpEffects, const vector<QuantizedEigenQBlock> *qQuantBlocks, const vector<QuantizedEigenUBlock> *qUQuantBlocks){
     long nBlocks = keptLdBlockInfoVec.size();
     
 #pragma omp parallel for schedule(dynamic)
     for(unsigned blk = 0; blk < nBlocks; blk++){
-        Ref<const MatrixXf> Q = Qblocks[blk];
         Ref<VectorXf> wcorr = wcorrBlocks[blk];
                 
         LDBlockInfo *blockInfo = keptLdBlockInfoVec[blk];
         
         unsigned blockStart = blockInfo->startSnpIdx;
         unsigned blockEnd   = blockInfo->endSnpIdx;
-                
-        for(unsigned i = blockStart; i <= blockEnd; i++){
-            Ref<const VectorXf> Qi = Q.col(i - blockStart);
-            if (snpEffects[i]) {
-                wcorr -= Qi*snpEffects[i];
+
+        const bool useQuantUBlk = qUQuantBlocks && blk < qUQuantBlocks->size() && (*qUQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+        const bool useQuantBlk = !useQuantUBlk && qQuantBlocks && blk < qQuantBlocks->size() && (*qQuantBlocks)[blk].m > 0 && Qblocks[blk].rows() == 0;
+        if (useQuantUBlk) {
+            const QuantizedEigenUBlock &ub = (*qUQuantBlocks)[blk];
+            float *wp = wcorr.data();
+            const int kdim = ub.k;
+            const float *sld = ub.sqrtLambdaScaleDequant.data();
+            switch (ub.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(ub.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(ub.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * sld[j] * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float c = -snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = ub.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            wp[j] += c * sld[j] * static_cast<float>(qq);
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        } else if (useQuantBlk) {
+            const QuantizedEigenQBlock &qb = (*qQuantBlocks)[blk];
+            float *wp = wcorr.data();
+            const int kdim = qb.k;
+            switch (qb.bits) {
+                case 8: {
+                    const int8_t *q = reinterpret_cast<const int8_t*>(qb.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 16: {
+                    const int16_t *q = reinterpret_cast<const int16_t*>(qb.raw.data());
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            wp[j] += c * static_cast<float>(q[col * kdim + j]);
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    const int packed_k = (kdim + 1) / 2;
+                    for (unsigned i = blockStart; i <= blockEnd; i++) {
+                        if (!snpEffects[i]) continue;
+                        const int col = (int)(i - blockStart);
+                        const float scale = qb.snpDequantScale[col];
+                        const float c = -scale * snpEffects[i];
+                        for (int j = 0; j < kdim; ++j) {
+                            const uint8_t bb = qb.raw[col * packed_k + (j / 2)];
+                            const int8_t qq = (j % 2 == 0) ? quantizedEigenQNibbleToSigned4(bb) : quantizedEigenQNibbleToSigned4(bb >> 4);
+                            wp[j] += c * static_cast<float>(qq);
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        } else {
+            Ref<const MatrixXf> Q = Qblocks[blk];
+            for(unsigned i = blockStart; i <= blockEnd; i++){
+                Ref<const VectorXf> Qi = Q.col(i - blockStart);
+                if (snpEffects[i]) {
+                    wcorr -= Qi*snpEffects[i];
+                }
             }
         }
     }
@@ -4926,7 +5646,7 @@ void ApproxBayesR::updateRHSlowRankModel(vector<VectorXf> &wcorrBlocks, const ve
 
 void ApproxBayesR::sampleUnknowns(const unsigned iter){
     if (lowRankModel) {
-        snpEffects.sampleFromFC_eigen(wcorrBlocks, data.Qblocks, whatBlocks, data.keptLdBlockInfoVec, data.nGWASblock, vareBlk.values, sigmaSq.value, Pis.values, gamma.values, snpStore, varg.value, hsqPercModel, deltaPi);
+        snpEffects.sampleFromFC_eigen(wcorrBlocks, data.Qblocks, whatBlocks, data.keptLdBlockInfoVec, data.nGWASblock, vareBlk.values, sigmaSq.value, Pis.values, gamma.values, snpStore, varg.value, hsqPercModel, deltaPi, &data.quantizedEigenQblocks, &data.quantizedEigenUblocks);
     } else if (sparse) {
         snpEffects.sampleFromFC_sparse(rcorr, data.ZPZsp, data.ZPZdiag, data.ZPy, data.chromInfoVec, data.snp2pq, sigmaSq.value, Pis.values, gamma.values, vare.value, snpStore, varg.value, hsqPercModel, deltaPi);
     } else {
@@ -4970,7 +5690,7 @@ void ApproxBayesR::sampleUnknowns(const unsigned iter){
 
     if (!(iter % 10)) {
         if (lowRankModel) {
-            nBadSnps.compute_eigen(snpEffects.badSnps, snpEffects.values, snpEffects.posteriorMean, data.b, wcorrBlocks, data.Qblocks, data.keptLdBlockInfoVec, iter);
+            nBadSnps.compute_eigen(snpEffects.badSnps, snpEffects.values, snpEffects.posteriorMean, data.b, wcorrBlocks, data.Qblocks, data.quantizedEigenQblocks, &data.quantizedEigenUblocks, data.keptLdBlockInfoVec, iter);
         } else if (sparse) {
             nBadSnps.compute_sparse(snpEffects.badSnps, snpEffects.values, snpEffects.posteriorMean, data.b, rcorr, data.ZPZsp, data.chromInfoVec, iter);
         } else {
@@ -4980,7 +5700,7 @@ void ApproxBayesR::sampleUnknowns(const unsigned iter){
 
     if (!(iter % 100)) {
         if (lowRankModel) {
-            rounding.computeWcorr_eigen(data.wcorrBlocks, data.Qblocks, data.keptLdBlockInfoVec, snpEffects.values, wcorrBlocks);
+            rounding.computeWcorr_eigen(data.wcorrBlocks, data.Qblocks, data.quantizedEigenQblocks, &data.quantizedEigenUblocks, data.keptLdBlockInfoVec, snpEffects.values, wcorrBlocks);
         } else if (sparse) {
             rounding.computeRcorr_sparse(data.ZPy, data.ZPZsp, data.windStart, data.windSize, data.chromInfoVec, snpEffects.values, rcorr);
         } else {

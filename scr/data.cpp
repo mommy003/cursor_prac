@@ -5974,7 +5974,7 @@ void Data::filterSnpByGelmanRubinStat(const float threshold){
 //
 //}
 
-void Data::convert(const string &eigenMatrixFile, const string &snplistFile, const string &title) {
+void Data::convert(const string &eigenMatrixFile, const string &snplistFile, const string &title, const int quantizedBits, const bool q8Entropy, const bool qSnpColumnQ, const bool qUTransposeQ) {
     ifstream in(snplistFile.c_str());
     if (!in) {
         throw("Error: cannot open file " + snplistFile);
@@ -6015,54 +6015,9 @@ void Data::convert(const string &eigenMatrixFile, const string &snplistFile, con
         int32_t cur_k = 0;
         float sumPosEigVal = 0;
         float oldEigenCutoff =0;
-        
-        string infile = eigenMatrixFile + "/block" + block->ID + ".eigen.bin";
-        FILE *fp = fopen(infile.c_str(), "rb");
-        if(!fp){throw ("Error: can not open the file [" + infile + "] to read.");}
-        
-        // 1. marker number
-        if(fread(&cur_m, sizeof(int32_t), 1, fp) != 1){
-            throw("Read " + infile + " error (m)");
-        }
-        
-        if(cur_m != numSnpInRegion[i]){
-            throw("In LD block " + block->ID + ", inconsistent marker number to marker information in " + infile);
-        }
-        // 2. ncol of eigenVec (number of eigenvalues)
-        if(fread(&cur_k, sizeof(int32_t), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about number of eigenvalues in  " + infile);
-            // cout << "Read " << eigenBinFile << " error (k)" << endl;
-            // throw("read file error");
-        }
-        // 3. sum of all positive eigenvalues
-        if(fread(&sumPosEigVal, sizeof(float), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about the sum of positive eigenvalues in " + infile);
-            // cout << "Read " << eigenBinFile << " error sumLambda" << endl;
-            // throw("read file error");
-        }
-        // 4. eigenCutoff
-        if(fread(&oldEigenCutoff, sizeof(float), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about eigen cutoff used in " + infile);
-            // cout << "Read " << eigenBinFile << " error svdVarProp" << endl;
-            // throw("read file error");
-        }
-        // 5. eigenvalues
-        VectorXf lambda(cur_k);
-        if(fread(lambda.data(), sizeof(float), cur_k, fp) != cur_k){
-            throw("In LD block " + block->ID + ",size error about eigenvalues in " + infile);
-            // cout << "Read " << eigenBinFile << " error (lambda)" << endl;
-            // throw("read file error");
-        }
-        // 6. eigenvector
-        MatrixXf U(cur_m, cur_k);
-        uint64_t nElements = (uint64_t)cur_m * (uint64_t)cur_k;
-        if(fread(U.data(), sizeof(float), nElements, fp) != nElements){
-            cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
-            cout << "nEle: " << nElements << " U.size: " << U.size() <<  " U.col: " << U.cols() << " row: " << U.rows() << endl;
-            throw("In LD block " + block->ID + ",size error about eigenvectors in " + infile);
-            // cout << "Read " << eigenBinFile << " error (U)" << endl;
-            // throw("read file error");
-        }
+        VectorXf lambda;
+        MatrixXf U;
+        readEigenBlockData(eigenMatrixFile, block->ID, numSnpInRegion[i], cur_m, cur_k, sumPosEigVal, oldEigenCutoff, lambda, U, quantizedBits, q8Entropy, qSnpColumnQ, qUTransposeQ);
         
         /// Step 1. construct LD
         MatrixXf LDPerBlock = U * lambda.asDiagonal() * U.transpose();
@@ -6135,10 +6090,6 @@ void Data::convert(const string &eigenMatrixFile, const string &snplistFile, con
         }
         
         if(!(i%10)) cout << " Converted block " << i << " numSnpInBlock " << block->numSnpInBlock << " numTargetSnps " << numTargetSNPsTotal << "\r" << flush;
-        
-        //        if(!(i%10)) cout << " Converted block " << i << "\r" << flush;
-        
-        fclose(fp);
     }
     
     
@@ -6161,7 +6112,7 @@ void Data::convert(const string &eigenMatrixFile, const string &snplistFile, con
     
 }
 
-void Data::getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqThreshold, const string &title){
+void Data::getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqThreshold, const string &title, const int quantizedBits, const bool q8Entropy, const bool qSnpColumnQ, const bool qUTransposeQ){
     
     vector<int> numSnpInRegion(numLDBlocks);
     
@@ -6186,54 +6137,9 @@ void Data::getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqTh
         int32_t cur_k = 0;
         float sumPosEigVal = 0;
         float oldEigenCutoff =0;
-        
-        string infile = eigenMatrixFile + "/block" + block->ID + ".eigen.bin";
-        FILE *fp = fopen(infile.c_str(), "rb");
-        if(!fp){throw ("Error: can not open the file [" + infile + "] to read.");}
-        
-        // 1. marker number
-        if(fread(&cur_m, sizeof(int32_t), 1, fp) != 1){
-            throw("Read " + infile + " error (m)");
-        }
-        
-        if(cur_m != numSnpInRegion[i]){
-            throw("In LD block " + block->ID + ", inconsistent marker number to marker information in " + infile);
-        }
-        // 2. ncol of eigenVec (number of eigenvalues)
-        if(fread(&cur_k, sizeof(int32_t), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about number of eigenvalues in  " + infile);
-            // cout << "Read " << eigenBinFile << " error (k)" << endl;
-            // throw("read file error");
-        }
-        // 3. sum of all positive eigenvalues
-        if(fread(&sumPosEigVal, sizeof(float), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about the sum of positive eigenvalues in " + infile);
-            // cout << "Read " << eigenBinFile << " error sumLambda" << endl;
-            // throw("read file error");
-        }
-        // 4. eigenCutoff
-        if(fread(&oldEigenCutoff, sizeof(float), 1, fp) != 1){
-            throw("In LD block " + block->ID + ", error about eigen cutoff used in " + infile);
-            // cout << "Read " << eigenBinFile << " error svdVarProp" << endl;
-            // throw("read file error");
-        }
-        // 5. eigenvalues
-        VectorXf lambda(cur_k);
-        if(fread(lambda.data(), sizeof(float), cur_k, fp) != cur_k){
-            throw("In LD block " + block->ID + ",size error about eigenvalues in " + infile);
-            // cout << "Read " << eigenBinFile << " error (lambda)" << endl;
-            // throw("read file error");
-        }
-        // 6. eigenvector
-        MatrixXf U(cur_m, cur_k);
-        uint64_t nElements = (uint64_t)cur_m * (uint64_t)cur_k;
-        if(fread(U.data(), sizeof(float), nElements, fp) != nElements){
-            cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
-            cout << "nEle: " << nElements << " U.size: " << U.size() <<  " U.col: " << U.cols() << " row: " << U.rows() << endl;
-            throw("In LD block " + block->ID + ",size error about eigenvectors in " + infile);
-            // cout << "Read " << eigenBinFile << " error (U)" << endl;
-            // throw("read file error");
-        }
+        VectorXf lambda;
+        MatrixXf U;
+        readEigenBlockData(eigenMatrixFile, block->ID, numSnpInRegion[i], cur_m, cur_k, sumPosEigVal, oldEigenCutoff, lambda, U, quantizedBits, q8Entropy, qSnpColumnQ, qUTransposeQ);
         
         // construct LD
         MatrixXf LDPerBlock = U * lambda.asDiagonal() * U.transpose();
@@ -6249,9 +6155,6 @@ void Data::getLDfromEigenMatrix(const string &eigenMatrixFile, const float rsqTh
                 }
             }
         }
-        
-        fclose(fp);
-
         if(!(i%10)) cout << " Computed LD for block " << i << "\r" << flush;
 
     }
@@ -7197,4 +7100,3 @@ void Data::calcJointEnrichmentJackknifeLM(const string &paramStr, const string &
     cout << "Output " << paramName << " enrichment results into file [" + outfile + "]." << endl;
 
 }
-

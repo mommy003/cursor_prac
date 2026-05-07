@@ -7,6 +7,7 @@
 //
 
 #include "xci.hpp"
+#include <random>
 
 using namespace std;
 
@@ -333,7 +334,7 @@ void XCI::simu(Data &data, const float pi, const float heritability, const float
     unsigned numQTL = pi*data.numIncdSnps;
     vector<unsigned> indices(data.numIncdSnps);
     std::iota(indices.begin(), indices.end(), 0);
-    std::random_shuffle(indices.begin(), indices.end());
+    std::shuffle(indices.begin(), indices.end(), std::default_random_engine{});
     vector<SnpInfo*> QTLvec(numQTL);
     MatrixXf Q(data.numKeptInds, numQTL);
     VectorXf alphaMale(numQTL);
